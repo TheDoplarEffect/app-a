@@ -11,6 +11,9 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Compute release tag
+        id: tag
+        run: echo "tag=v$(sed -n 's/.*versionName \"(.*)\".*/\1/p' app/build.gradle)-${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -41,6 +44,7 @@ jobs:
       - uses: softprops/action-gh-release@v2
         if: always()
         with:
+          tag_name: ${{ steps.tag.outputs.tag }}
           files: |
             app/build/outputs/apk/release/*.apk
             build-ci.log
