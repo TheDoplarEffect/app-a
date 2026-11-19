@@ -1,5 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-  <application android:label="app-a" android:allowBackup="true">
+  <application android:label="app-a" android:allowBackup="true" android:theme="@style/Theme.AppA">
     <activity android:name=".MainActivity" android:exported="true">
       <intent-filter>
         <action android:name="android.intent.action.MAIN"/>
