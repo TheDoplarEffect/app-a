@@ -4,6 +4,8 @@ on:
     branches: [master]
 permissions:
   contents: write
+env:
+  ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
 jobs:
   build:
     runs-on: ubuntu-24.04
@@ -13,6 +15,19 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+      - name: Ensure Android SDK components
+        run: |
+          SDK="$ANDROID_SDK_ROOT"
+          CTL="$SDK/cmdline-tools/latest/bin"
+          if [ ! -x "$CTL/sdkmanager" ]; then
+            mkdir -p "$SDK/cmdline-tools"
+            curl -fsSL https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o /tmp/clt.zip
+            unzip -q /tmp/clt.zip -d "$SDK/cmdline-tools"
+            mv "$SDK/cmdline-tools/cmdline-tools" "$SDK/cmdline-tools/latest"
+            CTL="$SDK/cmdline-tools/latest/bin"
+          fi
+          yes | "$CTL/sdkmanager" --licenses > /dev/null
+          "$CTL/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
       - name: Decode keystore
         run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > app/release.keystore
       - name: Build release APK
