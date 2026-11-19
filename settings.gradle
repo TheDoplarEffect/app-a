@@ -1,2 +1,5 @@
+pluginManagement {
+    repositories { google(); mavenCentral(); gradlePluginPortal() }
+}
 rootProject.name = "app-a"
 include ":app"
