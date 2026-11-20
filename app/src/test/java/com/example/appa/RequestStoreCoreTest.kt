@@ -96,4 +96,26 @@ class RequestStoreCoreTest {
         assertEquals(RequestStatus.AVAILABLE, StatusRules.next(RequestStatus.PROCESSING, 10, 4, 10))
         assertNull(StatusRules.next(RequestStatus.AVAILABLE, 10_000, 4, 10))
     }
+
+    @Test
+    fun `persists as JSON array and reloads external + snapshot`() {
+        var stored: String? = null
+        val s1 = RequestStoreCore(load = { stored }, save = { stored = it })
+        s1.create("movies-01", 5L, external = "radarr:9", snapshot = """{"title":"Dune","type":"movies","year":2021,"rating":8.1,"posterUrl":""}""")
+        assertTrue("expected JSON array, got: $stored", stored!!.startsWith("["))
+        val s2 = RequestStoreCore(load = { stored }, save = {})
+        val r = s2.byMediaId("movies-01")
+        assertNotNull(r)
+        assertEquals("radarr:9", r!!.external)
+        assertEquals("Dune", MediaSnapshot.fromJson(r.snapshot)!!.title)
+    }
+
+    @Test
+    fun `legacy TSV lines still load`() {
+        val store = RequestStoreCore(load = { "old-id\tseries-02\t7\tPROCESSING\t9\tsonarr:3" }, save = {})
+        val r = store.byMediaId("series-02")
+        assertNotNull(r)
+        assertEquals(RequestStatus.PROCESSING, r!!.status)
+        assertEquals("sonarr:3", r.external)
+    }
 }

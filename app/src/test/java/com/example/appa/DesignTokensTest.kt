@@ -123,6 +123,36 @@ class DesignTokensTest {
     }
 
     @Test
+    fun `status colors pass WCAG AA on their own 22%-tinted pill background`() {
+        for (t in themes) {
+            // the pill bg is withAlpha(color, 0.22) composited over the (opaque) screen background
+            for (c in listOf(t.colors.success, t.colors.warning, t.colors.error, t.colors.info)) {
+                val pillBg = compositeOver(withAlpha(c, 0.22f), t.colors.background)
+                val r = contrastRatio(c, pillBg)
+                assertTrue("${t.name} status-on-tint contrast $r < 4.5", r >= 4.5)
+            }
+        }
+    }
+
+    @Test
+    fun `white label passes WCAG AA on every accent gradient endpoint`() {
+        for (t in themes) {
+            for (endpoint in listOf(t.colors.accentStart, t.colors.accentEnd)) {
+                val r = contrastRatio(t.colors.textOnAccent, endpoint)
+                assertTrue("${t.name} onAccent-on-gradient contrast $r < 4.5", r >= 4.5)
+            }
+        }
+    }
+
+    @Test
+    fun `accentText (accent as text on glass) passes WCAG AA on the background`() {
+        for (t in themes) {
+            val r = contrastRatio(t.colors.accentText, t.colors.background)
+            assertTrue("${t.name} accentText contrast $r < 4.5", r >= 4.5)
+        }
+    }
+
+    @Test
     fun `aurora blobs are distinct hues per theme`() {
         for (t in themes) {
             val set = setOf(t.colors.aurora1, t.colors.aurora2, t.colors.aurora3)

@@ -191,7 +191,7 @@ class LiveParsingTest {
         val body = """[{"id":1,"tvdbId":81189,"statistics":{"episodeFileCount":12}},{"id":2,"tvdbId":1,"statistics":{"episodeFileCount":0}}]"""
         val http = fakeHttp(mapOf("/api/v3/series" to resp(body)))
         val states = SonarrClient("http://sonarr:8989", "K", http).seriesStates()
-        assertEquals(listOf(Triple(1, 81189, true), Triple(2, 1, false)), states)
+        assertEquals(listOf(SeriesState(1, 81189, true), SeriesState(2, 1, false)), states)
     }
 
     @Test
@@ -202,7 +202,7 @@ class LiveParsingTest {
         ))
         val r = RadarrClient("http://radarr:7878", "K", http)
         assertEquals("Pulp Fiction", r.lookupTmdb("680")!!["title"]?.let { (it as kotlinx.serialization.json.JsonPrimitive).content })
-        assertEquals(listOf(Triple(7, "680", true)), r.movieStates())
+        assertEquals(listOf(MovieState(7, "680", true)), r.movieStates())
     }
 
     @Test
@@ -357,5 +357,49 @@ class LiveParsingTest {
     fun `qenc encodes spaces and special chars`() {
         assertEquals("dune%20messiah", qenc("dune messiah"))
         assertEquals("a%26b%3Dc", qenc("a&b=c"))
+    }
+
+    @Test
+    fun `Resp header lookup tolerates the null status-line key`() {
+        val hm = java.util.HashMap<String, List<String>>()
+        hm.put(null, listOf("HTTP/1.1 301 Moved")) // platform type: Java headerFields really has a null key
+        hm.put("Location", listOf("magnet:?xt=urn:btih:X"))
+        val resp = Resp(301, "", ByteArray(0), hm)
+        assertEquals("magnet:?xt=urn:btih:X", resp.header("Location"))
+        assertEquals("magnet:?xt=urn:btih:X", resp.header("location")) // case-insensitive
+        assertNull(resp.header("Missing"))
+    }
+
+    @Test
+    fun `isSafeExternalUrl rejects bad scheme, credentials, loopback, metadata`() {
+        assertTrue(isSafeExternalUrl("https://93.184.216.34/t/1.torrent"))
+        assertTrue(isSafeExternalUrl("http://192.168.178.42:9696/api")) // LAN host allowed
+        assertFalse(isSafeExternalUrl("ftp://93.184.216.34/"))
+        assertFalse(isSafeExternalUrl("http://user:pass@93.184.216.34/"))
+        assertFalse(isSafeExternalUrl("http://127.0.0.1/"))
+        assertFalse(isSafeExternalUrl("http://169.254.169.254/latest/meta-data"))
+        assertFalse(isSafeExternalUrl("not a url"))
+    }
+
+    @Test
+    fun `ExternalRef round-trips and rejects junk`() {
+        assertEquals("radarr:42", ExternalRef("radarr", "42").toString())
+        assertEquals(ExternalRef("sonarr", "7"), ExternalRef.parse("sonarr:7"))
+        assertNull(ExternalRef.parse(""))
+        assertNull(ExternalRef.parse("noColon"))
+        assertNull(ExternalRef.parse(":x"))
+        assertNull(ExternalRef.parse("x:"))
+    }
+
+    @Test
+    fun `MediaSnapshot json round-trips to a Media`() {
+        val m = Media("movies-1", MediaType.MOVIES, "Dune", 2021, "ov", listOf("Sci-Fi"), 8.1, "#111111", "#222222", runtimeMinutes = 155, posterUrl = "https://img/x.jpg")
+        val snap = MediaSnapshot.of(m)
+        val back = MediaSnapshot.fromJson(snap.toJson())!!.toMedia("movies-1")
+        assertEquals("Dune", back.title)
+        assertEquals(MediaType.MOVIES, back.type)
+        assertEquals(2021, back.year)
+        assertEquals("https://img/x.jpg", back.posterUrl)
+        assertEquals(8.1, back.rating, 1e-9)
     }
 }
