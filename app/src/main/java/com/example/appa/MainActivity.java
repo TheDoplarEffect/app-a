@@ -18,6 +18,21 @@ public class MainActivity extends Activity {
         screen = MainScreenKt.showMainScreen(this);
     }
 
+    @Override protected void onStart() {
+        super.onStart();
+        if (screen != null) screen.onStart();
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        if (screen != null) screen.onResume();
+    }
+
+    @Override protected void onStop() {
+        if (screen != null) screen.onStop();
+        super.onStop();
+    }
+
     @Override protected void onDestroy() {
         if (screen != null) screen.detach();
         super.onDestroy();

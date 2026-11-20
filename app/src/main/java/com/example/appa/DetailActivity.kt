@@ -16,6 +16,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import java.util.Collections
 
 /**
  * Detail screen (organism). Hero poster + glass meta card + request action +
@@ -30,8 +31,10 @@ class DetailActivity : Activity() {
     private lateinit var magnetsBox: LinearLayout
     private lateinit var metaInner: LinearLayout
     private lateinit var actionsRow: LinearLayout
+    private lateinit var currentMedia: Media
     private val handler = Handler(Looper.getMainLooper())
-    private var detailsRequested = false
+    private val dialogs = Collections.synchronizedList(mutableListOf<AlertDialog>())
+    private val workers = Collections.synchronizedList(mutableListOf<Thread>())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -40,6 +43,7 @@ class DetailActivity : Activity() {
         val t = AppTheme.current
         val mediaId = intent.getStringExtra("mediaId") ?: run { finishDropping(); return }
         val media = AppState.mediaById(mediaId) ?: run { finishDropping(); return }
+        currentMedia = media
 
         val root = FrameLayout(this).withAurora()
         val body = col(this) {
@@ -53,68 +57,29 @@ class DetailActivity : Activity() {
             scroll.addView(content)
             addView(scroll, lp(MATCH, 0, weight = 1f, marginTopDp = t.space.md))
 
-            // ---------- hero ----------
-            val hero = FrameLayout(this@DetailActivity).apply {
-                glass(t.radius.sheet, strong = true, t = t)
-                roundedClip(t.radius.sheet)
-            }
-            val heroH = dp(300)
-            if (media.posterUrl != null) {
-                val img = ImageView(this@DetailActivity).apply {
-                    scaleType = ImageView.ScaleType.CENTER_CROP
-                    roundedClip(t.radius.sheet)
-                    contentDescription = "${media.title} poster"
-                }
-                hero.addView(img, FrameLayout.LayoutParams(MATCH, heroH))
-                ImageLoader.load(media.posterUrl!!, img)
-            } else {
-                hero.addView(GradientPoster(this@DetailActivity, media, t).apply {
-                    roundedClip(t.radius.sheet)
-                    contentDescription = "${media.title} poster"
-                }, FrameLayout.LayoutParams(MATCH, heroH))
-            }
-            hero.addView(View(this@DetailActivity).apply { background = posterScrim(140, t) },
-                FrameLayout.LayoutParams(MATCH, dp(140), Gravity.BOTTOM))
-            val heroText = col(this@DetailActivity) {
-                gravity = Gravity.BOTTOM
-                val p = dp(t.space.lg); setPadding(p, p, p, p)
-                addView(AppText(this@DetailActivity, media.title, TextStyle.DISPLAY, t = t))
-                addView(row(this@DetailActivity) {
-                    gravity = Gravity.CENTER_VERTICAL
-                    addView(Chip(this@DetailActivity, "★ %.1f".format(media.rating), t.colors.chipScrim, fg = 0xFFFFFFFF.toInt(), t = t))
-                    addView(Chip(this@DetailActivity, "${media.year} · ${media.type.label}", t.colors.chipScrim, fg = 0xFFFFFFFF.toInt(), t = t),
-                        LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(6) })
-                }, lp(MATCH, WRAP, marginTopDp = t.space.sm))
-            }
-            hero.addView(heroText, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM))
-            content.addView(hero, lp(MATCH, WRAP))
-            hero.popIn()
+            content.addView(buildHero(media, t), lp(MATCH, WRAP))
 
             // live: fetch full details ONCE in the background, then update the meta card in place
             if (AppState.liveMode && media.type != MediaType.AUDIOBOOKS) {
-                detailsRequested = true
-                Thread {
+                spawnWorker {
                     val d = runCatching { AppState.repo?.details(media) ?: media }.getOrDefault(media)
                     handler.post {
                         AppState.repo?.remember(listOf(d))
                         if (d.id == mediaId && !isFinishing && !isDestroyed) renderMeta(d, t)
                     }
-                }.start()
+                }
             }
 
-            // ---------- meta card (re-rendered in place when details arrive) ----------
             val metaCard = GlassCard(this@DetailActivity, padDp = t.space.lg.toInt(), t = t) {}
             metaInner = metaCard.getChildAt(0) as LinearLayout
             renderMeta(media, t)
             content.addView(metaCard, lp(MATCH, WRAP, marginTopDp = t.space.lg))
             metaCard.slideUpIn(delayMs = 80)
 
-            // ---------- request action ----------
             actionsRow = row(this@DetailActivity) { gravity = Gravity.CENTER_VERTICAL }
             renderActions(media, t)
             content.addView(actionsRow, lp(MATCH, WRAP, marginTopDp = t.space.lg))
 
-            // ---------- magnets ----------
             magnetsHeader = AppText(this@DetailActivity, "🧲 Magnets", TextStyle.TITLE, bold = true, t = t)
             content.addView(magnetsHeader, lp(MATCH, WRAP, marginTopDp = t.space.xl))
             magnetsBox = col(this@DetailActivity)
@@ -125,6 +90,66 @@ class DetailActivity : Activity() {
         root.addView(body, FrameLayout.LayoutParams(MATCH, MATCH))
         setContentView(root)
     }
+
+    override fun onDestroy() {
+        // no window leaks: dismiss dialogs; no thread leaks: interrupt workers
+        synchronized(dialogs) { dialogs.forEach { runCatching { it.dismiss() } }; dialogs.clear() }
+        synchronized(workers) { workers.forEach { it.interrupt() }; workers.clear() }
+        super.onDestroy()
+    }
+
+    private fun spawnWorker(block: () -> Unit) {
+        val th = Thread(block)
+        workers.add(th)
+        th.start()
+    }
+
+    private fun showDialog(builder: AlertDialog.Builder) {
+        val d = builder.show()
+        dialogs.add(d)
+    }
+
+    // ---------- hero ----------
+
+    private fun buildHero(media: Media, t: DesignTokens): FrameLayout {
+        val hero = FrameLayout(this).apply {
+            glass(t.radius.sheet, strong = true, t = t)
+            roundedClip(t.radius.sheet)
+        }
+        val heroH = dp(300)
+        if (media.posterUrl != null) {
+            val img = ImageView(this).apply {
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                roundedClip(t.radius.sheet)
+                contentDescription = "${media.title} poster"
+            }
+            hero.addView(img, FrameLayout.LayoutParams(MATCH, heroH))
+            ImageLoader.load(media.posterUrl!!, img)
+        } else {
+            hero.addView(GradientPoster(this, media, t).apply {
+                roundedClip(t.radius.sheet)
+                contentDescription = "${media.title} poster"
+            }, FrameLayout.LayoutParams(MATCH, heroH))
+        }
+        hero.addView(View(this).apply { background = posterScrim(140, t) },
+            FrameLayout.LayoutParams(MATCH, dp(140), Gravity.BOTTOM))
+        val heroText = col(this) {
+            gravity = Gravity.BOTTOM
+            val p = dp(t.space.lg); setPadding(p, p, p, p)
+            addView(AppText(this@DetailActivity, media.title, TextStyle.DISPLAY, t = t))
+            addView(row(this@DetailActivity) {
+                gravity = Gravity.CENTER_VERTICAL
+                addView(Chip(this@DetailActivity, "★ %.1f".format(media.rating), t.colors.chipScrim, fg = 0xFFFFFFFF.toInt(), t = t))
+                addView(Chip(this@DetailActivity, "${media.year} · ${media.type.label}", t.colors.chipScrim, fg = 0xFFFFFFFF.toInt(), t = t),
+                    LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(6) })
+            }, lp(MATCH, WRAP, marginTopDp = t.space.sm))
+        }
+        hero.addView(heroText, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.BOTTOM))
+        hero.popIn()
+        return hero
+    }
+
+    // ---------- meta ----------
 
     private fun renderMeta(media: Media, t: DesignTokens) {
         metaInner.removeAllViews()
@@ -138,11 +163,11 @@ class DetailActivity : Activity() {
             if (media.durationHours != null) chips += "%.1f h".format(media.durationHours)
         }
         if (chips.isEmpty()) chips += "No extra metadata"
-        // simple wrapping flow: one row per chip, wrap manually into rows of ~3
+        // wrapping flow: rows of ~3 chips
         var flow = row(this) { gravity = Gravity.CENTER_VERTICAL }
         chips.forEachIndexed { i, c ->
             if (i > 0 && i % 3 == 0) {
-                metaInner.addView(flow, metaInner.lp(MATCH, WRAP, marginTopDp = if (i == 3) 0 else 6))
+                metaInner.addView(flow, metaInner.lp(MATCH, WRAP, marginTopDp = 6))
                 flow = row(this) { gravity = Gravity.CENTER_VERTICAL }
             }
             flow.addView(Chip(this, c, t.colors.surfaceGlassStrong, fg = t.colors.textSecondary, t),
@@ -154,6 +179,8 @@ class DetailActivity : Activity() {
             metaInner.lp(MATCH, WRAP, marginTopDp = t.space.md)
         )
     }
+
+    // ---------- request action ----------
 
     private fun renderActions(media: Media, t: DesignTokens) {
         actionsRow.removeAllViews()
@@ -170,7 +197,7 @@ class DetailActivity : Activity() {
                 }
                 actionsRow.addView(PrimaryButton(this, statusText, enabled = false, t, onClick = {}), actionsRow.lp(WRAP, WRAP))
                 actionsRow.addView(DangerButton(this, "Cancel request", t) {
-                    AlertDialog.Builder(this)
+                    showDialog(AlertDialog.Builder(this)
                         .setTitle("Cancel request?")
                         .setMessage("Remove the request for \"${media.title}\"? (The *arr entry stays.)")
                         .setPositiveButton("Remove") { _, _ ->
@@ -178,8 +205,7 @@ class DetailActivity : Activity() {
                             Toast.makeText(this, "Request removed", Toast.LENGTH_SHORT).show()
                             renderActions(media, t)
                         }
-                        .setNegativeButton("Keep", null)
-                        .show()
+                        .setNegativeButton("Keep", null))
                 }, LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(8) })
             }
             else -> {
@@ -192,29 +218,36 @@ class DetailActivity : Activity() {
     private fun doRequest(media: Media, btn: TextView) {
         btn.isEnabled = false
         btn.text = "Requesting…"
+        val snapshot = MediaSnapshot.of(media).toJson()
         if (AppState.liveMode) {
-            Thread {
+            spawnWorker {
                 val result = runCatching {
                     val external = AppState.repo?.request(media) ?: throw ApiException("Live mode off")
-                    val created = AppState.store.create(media.id, external = external)
-                    if (created == null) "Already requested" else "Added to ${if (external.startsWith("radarr")) "Radarr" else if (external.startsWith("sonarr")) "Sonarr" else "local list"}"
+                    val created = AppState.store.create(media.id, external = external, snapshot = snapshot)
+                    if (created == null) "Already requested"
+                    else {
+                        val kind = ExternalRef.parse(external)?.kind
+                        "Added to ${kind?.replaceFirstChar { it.uppercase() } ?: "local list"}"
+                    }
                 }
                 handler.post {
                     Toast.makeText(this, result.getOrElse { "Failed: ${it.message}" }, Toast.LENGTH_LONG).show()
                     renderActions(media, AppTheme.current)
                 }
-            }.start()
+            }
         } else {
-            val created = AppState.store.create(media.id)
+            val created = AppState.store.create(media.id, snapshot = snapshot)
             Toast.makeText(this, if (created == null) "Already requested" else "Request submitted — monitoring started", Toast.LENGTH_SHORT).show()
             renderActions(media, AppTheme.current)
         }
     }
 
+    // ---------- magnets ----------
+
     private fun loadMagnets(media: Media, t: DesignTokens) {
         if (AppState.liveMode) {
             magnetsHeader.text = "🧲 Magnets — searching indexers…"
-            Thread {
+            spawnWorker {
                 val res = runCatching { AppState.repo?.magnetsFor(media) ?: emptyList() }
                 handler.post {
                     if (isFinishing || isDestroyed) return@post
@@ -226,7 +259,7 @@ class DetailActivity : Activity() {
                         renderMagnets(res.getOrDefault(emptyList()), t)
                     }
                 }
-            }.start()
+            }
         } else {
             val mags = Catalog.magnetsByMediaId[media.id].orEmpty().map {
                 LiveMagnet(it.name, it.source, it.sizeBytes, it.seeders, it.leechers, downloadUrl = "", magnetUri = it.magnetUri)
@@ -243,7 +276,7 @@ class DetailActivity : Activity() {
                 gravity = Gravity.CENTER
                 val p = dp(t.space.xl); setPadding(p, p, p, p)
                 addView(AppText(this@DetailActivity, if (error != null) "Search failed: $error" else "No magnets found on the indexers for this title.", TextStyle.BODY, color = t.colors.textSecondary, t = t))
-                addView(SecondaryButton(this@DetailActivity, "Retry", t) { loadMagnets(AppState.mediaById(intent.getStringExtra("mediaId") ?: "") ?: return@SecondaryButton, t) },
+                addView(SecondaryButton(this@DetailActivity, "Retry", t) { loadMagnets(currentMedia, t) },
                     LinearLayout.LayoutParams(WRAP, WRAP).apply { topMargin = dp(t.space.md); gravity = Gravity.CENTER })
             }
             magnetsBox.addView(box)
@@ -258,7 +291,7 @@ class DetailActivity : Activity() {
 
     private fun copyMagnet(mag: LiveMagnet) {
         Toast.makeText(this, "Resolving magnet…", Toast.LENGTH_SHORT).show()
-        Thread {
+        spawnWorker {
             val res = runCatching {
                 val uri = if (AppState.liveMode) AppState.repo?.resolveMagnet(mag) ?: "" else mag.magnetUri
                 // only a real magnet/torrent link is ever copied — never the apikey-bearing download URL
@@ -277,6 +310,6 @@ class DetailActivity : Activity() {
                     }
                 )
             }
-        }.start()
+        }
     }
 }

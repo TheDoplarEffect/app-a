@@ -21,6 +21,8 @@ class SettingsActivity : Activity() {
     private lateinit var fields: MutableMap<String, EditText>
     private var liveChecked = false
     private lateinit var testResults: LinearLayout
+    private lateinit var saveBtn: android.widget.TextView
+    private lateinit var testBtn: android.widget.TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -48,32 +50,34 @@ class SettingsActivity : Activity() {
 
             fields = mutableMapOf()
             val cfg = AppState.config
-            fun field(label: String, key: String, value: String, hint: String = "", secret: Boolean = false) {
+            fun field(label: String, key: String, value: String, hint: String = "", secret: Boolean = false, isUrl: Boolean = false) {
                 val (lab, et) = FormField(this@SettingsActivity, label, value, hint, secret, t)
                 val err = AppText(this@SettingsActivity, "", TextStyle.LABEL, color = t.colors.error, t = t).apply { visibility = View.GONE }
                 form.addView(lab, lp(MATCH, WRAP, marginTopDp = t.space.md))
                 form.addView(et, lp(MATCH, WRAP, marginTopDp = t.space.xs))
                 form.addView(err, lp(MATCH, WRAP, marginTopDp = 2))
-                et.addTextChangedListener(object : android.text.TextWatcher {
-                    override fun beforeTextChanged(a: CharSequence?, b: Int, c: Int, d: Int) {}
-                    override fun onTextChanged(a: CharSequence?, b: Int, c: Int, d: Int) {
-                        val e = AppConfig().urlError(et.text.toString().trim().trimEnd('/'))
-                        err.text = e ?: ""
-                        err.visibility = if (e == null) View.GONE else View.VISIBLE
-                    }
-                    override fun afterTextChanged(a: android.text.Editable?) {}
-                })
+                if (isUrl) { // only URL fields get the scheme validator — never token/key fields
+                    et.addTextChangedListener(object : android.text.TextWatcher {
+                        override fun beforeTextChanged(a: CharSequence?, b: Int, c: Int, d: Int) {}
+                        override fun onTextChanged(a: CharSequence?, b: Int, c: Int, d: Int) {
+                            val e = AppConfig().urlError(et.text.toString().trim().trimEnd('/'))
+                            err.text = e ?: ""
+                            err.visibility = if (e == null) View.GONE else View.VISIBLE
+                        }
+                        override fun afterTextChanged(a: android.text.Editable?) {}
+                    })
+                }
                 fields[key] = et
             }
 
             field("TMDB API read token", "tmdbToken", cfg.tmdbToken, "eyJ…", secret = true)
-            field("Sonarr URL", "sonarrUrl", cfg.sonarrUrl, "http://192.168.178.42:8989")
+            field("Sonarr URL", "sonarrUrl", cfg.sonarrUrl, "http://192.168.178.42:8989", isUrl = true)
             field("Sonarr API key", "sonarrKey", cfg.sonarrKey, secret = true)
-            field("Radarr URL", "radarrUrl", cfg.radarrUrl, "http://192.168.178.42:7878")
+            field("Radarr URL", "radarrUrl", cfg.radarrUrl, "http://192.168.178.42:7878", isUrl = true)
             field("Radarr API key", "radarrKey", cfg.radarrKey, secret = true)
-            field("Prowlarr URL (magnets)", "prowlarrUrl", cfg.prowlarrUrl, "http://192.168.178.42:9696")
+            field("Prowlarr URL (magnets)", "prowlarrUrl", cfg.prowlarrUrl, "http://192.168.178.42:9696", isUrl = true)
             field("Prowlarr API key", "prowlarrKey", cfg.prowlarrKey, secret = true)
-            field("Jellyfin URL", "jellyfinUrl", cfg.jellyfinUrl, "https://…")
+            field("Jellyfin URL", "jellyfinUrl", cfg.jellyfinUrl, "https://…", isUrl = true)
             field("Jellyfin API key", "jellyfinKey", cfg.jellyfinKey, secret = true)
 
             form.addView(SwitchRow(this@SettingsActivity, "Use live services (otherwise placeholder mode)", cfg.liveMode) { liveChecked = it },
@@ -87,8 +91,10 @@ class SettingsActivity : Activity() {
             form.addView(testResults, lp(MATCH, WRAP, marginTopDp = t.space.md))
 
             val btnRow = row(this@SettingsActivity) { gravity = android.view.Gravity.CENTER_VERTICAL }
-            btnRow.addView(PrimaryButton(this@SettingsActivity, "Save") { save() }, lp(WRAP, WRAP))
-            btnRow.addView(SecondaryButton(this@SettingsActivity, "Test connection") { test() }, lp(WRAP, WRAP, marginStartDp = t.space.sm))
+            saveBtn = PrimaryButton(this@SettingsActivity, "Save") { save() }
+            testBtn = SecondaryButton(this@SettingsActivity, "Test connection") { test() }
+            btnRow.addView(saveBtn, lp(WRAP, WRAP))
+            btnRow.addView(testBtn, lp(WRAP, WRAP, marginStartDp = t.space.sm))
             addView(btnRow, lp(MATCH, WRAP, marginTopDp = t.space.lg))
         }
         root.addView(body, FrameLayout.LayoutParams(MATCH, MATCH))
@@ -111,9 +117,17 @@ class SettingsActivity : Activity() {
 
     private fun save() {
         val cfg = collect()
-        AppState.saveConfig(this, cfg)
-        Toast.makeText(this, if (cfg.normalized().liveReady) "Saved — live mode on" else "Saved", Toast.LENGTH_SHORT).show()
-        finishDropping()
+        saveBtn.isEnabled = false
+        AppState.saveConfig(this, cfg) {
+            // honest feedback: only claim live mode when it actually engaged
+            Toast.makeText(
+                this,
+                if (AppState.liveMode) "Saved — live mode on"
+                else "Saved — placeholder mode (fill TMDB + Sonarr/Radarr and enable live mode to go live)",
+                Toast.LENGTH_LONG
+            ).show()
+            finishDropping()
+        }
     }
 
     private fun test() {
@@ -123,6 +137,8 @@ class SettingsActivity : Activity() {
             Toast.makeText(this, "Fill TMDB + Sonarr/Radarr and enable live mode first", Toast.LENGTH_LONG).show()
             return
         }
+        testBtn.isEnabled = false
+        testBtn.text = "Testing…"
         testResults.removeAllViews()
         val names = listOf("tmdb", "prowlarr", "sonarr", "radarr", "jellyfin")
         val chips = names.associateWith { name ->
@@ -131,14 +147,17 @@ class SettingsActivity : Activity() {
             }
         }
         Thread {
-            val results = LiveRepository(cfg).pingAll()
+            val results = runCatching { LiveRepository(cfg).pingAll() }.getOrElse { emptyMap() }
             Handler(Looper.getMainLooper()).post {
+                if (isFinishing || isDestroyed) return@post
                 names.forEach { name ->
                     val ok = results[name] == true
                     val c = chips[name]!!
                     c.text = "$name ${if (ok) "✓" else "✗"}"
                     c.restyleChip(if (ok) t.colors.success else t.colors.error, t)
                 }
+                testBtn.isEnabled = true
+                testBtn.text = "Test connection"
             }
         }.start()
     }

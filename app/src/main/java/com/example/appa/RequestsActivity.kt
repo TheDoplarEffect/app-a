@@ -1,26 +1,31 @@
 package com.example.appa
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
-import android.view.View
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Toast
+import java.util.Collections
 
 /**
  * Requests screen (organism): glass list of requested titles with animated
- * status pills. Live mode polls Jellyfin + *arr every 5s; placeholder mode
- * runs the simulated ticker.
+ * status pills. Uses the shared [StatusPoller] (in-flight-guarded) — live
+ * mode refreshes Jellyfin + *arr state, placeholder mode runs the simulated
+ * ticker. A failed refresh shows a one-line stale warning instead of silence.
  */
 class RequestsActivity : Activity() {
 
     private lateinit var list: LinearLayout
     private lateinit var countLabel: android.widget.TextView
-    private val handler = Handler(Looper.getMainLooper())
-    private lateinit var ticker: Runnable
+    private lateinit var staleLabel: android.widget.TextView
+    private val dialogs = Collections.synchronizedList(mutableListOf<AlertDialog>())
+    private val poller = StatusPoller { changed, failed ->
+        if (failed) staleLabel.text = "⚠ Last status refresh failed — showing cached statuses"
+        else if (staleLabel.text.isNotEmpty()) staleLabel.text = ""
+        if (changed || failed) render()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -41,6 +46,8 @@ class RequestsActivity : Activity() {
             addView(topBar, lp(MATCH, WRAP))
             countLabel = AppText(this@RequestsActivity, "", TextStyle.LABEL, t = t)
             addView(countLabel, lp(MATCH, WRAP, marginTopDp = t.space.xs))
+            staleLabel = AppText(this@RequestsActivity, "", TextStyle.LABEL, color = t.colors.warning, t = t)
+            addView(staleLabel, lp(MATCH, WRAP, marginTopDp = t.space.xs))
             addView(AppText(
                 this@RequestsActivity,
                 if (AppState.liveMode) "Live status from Jellyfin + Sonarr/Radarr — polled every 5s"
@@ -57,32 +64,28 @@ class RequestsActivity : Activity() {
         setContentView(root)
 
         render()
-        ticker = object : Runnable {
-            override fun run() {
-                if (AppState.liveMode) {
-                    AppState.store.tick()
-                    Thread {
-                        runCatching { AppState.repo?.refreshStatuses(AppState.store) }
-                        handler.post { if (!isFinishing && !isDestroyed) render() }
-                    }.start()
-                    handler.postDelayed(this, 5000)
-                } else {
-                    if (AppState.store.tick().isNotEmpty()) render()
-                    handler.postDelayed(this, 1000)
-                }
-            }
-        }
-        handler.postDelayed(ticker, 1000)
+    }
+
+    override fun onStart() {
+        super.onStart()
+        poller.start()
+    }
+
+    override fun onStop() {
+        poller.stop()
+        super.onStop()
     }
 
     override fun onDestroy() {
+        poller.cancel()
+        synchronized(dialogs) { dialogs.forEach { runCatching { it.dismiss() } }; dialogs.clear() }
         super.onDestroy()
-        if (::ticker.isInitialized) handler.removeCallbacks(ticker)
     }
 
     private var lastSignature = ""
 
     private fun render() {
+        if (isFinishing || isDestroyed) return
         val t = AppTheme.current
         val requests = AppState.store.all().sortedByDescending { it.requestedAt }
         val signature = requests.joinToString("|") { "${it.id}:${it.status}:${it.external}" }
@@ -102,14 +105,14 @@ class RequestsActivity : Activity() {
                     if (media.posterUrl != null) {
                         val img = android.widget.ImageView(this@RequestsActivity).apply {
                             scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
-                            roundedClip(t.radius.button)
+                            roundedClip(t.radius.thumb)
                             contentDescription = "${media.title} poster"
                         }
                         addView(img, LinearLayout.LayoutParams(dp(44), dp(64)))
                         ImageLoader.load(media.posterUrl!!, img)
                     } else {
                         addView(GradientPoster(this@RequestsActivity, media, t).apply {
-                            roundedClip(t.radius.button)
+                            roundedClip(t.radius.thumb)
                             contentDescription = "${media.title} poster"
                         }, LinearLayout.LayoutParams(dp(44), dp(64)))
                     }
@@ -118,7 +121,7 @@ class RequestsActivity : Activity() {
                         addView(AppText(
                             this@RequestsActivity,
                             "${media.type.label} · ${media.year} · ${formatTime(r.requestedAt)}" +
-                                (if (r.external.isNotBlank()) " · ${r.external.substringBefore(":")}" else " · local"),
+                                (if (r.external.isNotBlank()) " · ${ExternalRef.parse(r.external)?.kind ?: "local"}" else " · local"),
                             TextStyle.LABEL, t = t
                         ), lp(MATCH, WRAP, marginTopDp = 2))
                         layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(10) }
@@ -128,7 +131,7 @@ class RequestsActivity : Activity() {
                         addView(pill, LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(8) })
                     }
                     addView(CircleIconButton(this@RequestsActivity, "🗑", 0, t, contentDescription = "Remove request for ${media.title}") {
-                        android.app.AlertDialog.Builder(this@RequestsActivity)
+                        val d = AlertDialog.Builder(this@RequestsActivity)
                             .setTitle("Remove request?")
                             .setMessage("Remove the request for \"${media.title}\"?")
                             .setPositiveButton("Remove") { _, _ ->
@@ -139,12 +142,14 @@ class RequestsActivity : Activity() {
                             }
                             .setNegativeButton("Keep", null)
                             .show()
+                        dialogs.add(d)
                     }, LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(8) })
                 }
                 addView(rrow, lp(MATCH, WRAP))
             }
             card.contentDescription = "${media.title}, open details"
             card.setOnClickListener { openRisingTo(DetailActivity::class.java, "mediaId", r.mediaId) }
+            card.pressable() // press feedback on the card
             list.addView(card, list.lp(MATCH, WRAP, marginTopDp = if (i == 0) 0 else t.space.sm))
         }
         list.staggerIn(stepMs = 30)
