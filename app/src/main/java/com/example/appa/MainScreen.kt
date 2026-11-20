@@ -15,13 +15,15 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.GridLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.TextView
 
 /**
  * Main screen: three tabs (Series / Movies / Audiobooks), a search field and a
- * poster grid. Requests live behind the header button. All layout is
- * programmatic so no R class / XML layouts are needed.
+ * poster grid. In live mode data comes from TMDB/Open Library + Jellyfin;
+ * otherwise from the placeholder catalog. All layout is programmatic.
  */
 
 fun showMainScreen(activity: Activity) {
@@ -36,22 +38,36 @@ class MainScreen(private val activity: Activity) {
 
     private var currentTab = MediaType.MOVIES
     private var query = ""
+    private var items: List<Media> = emptyList()
 
     private lateinit var requestsBtn: Button
     private lateinit var searchInput: EditText
     private lateinit var grid: GridLayout
     private lateinit var scroll: ScrollView
-    private lateinit var empty: View
+    private lateinit var empty: TextView
+    private lateinit var loading: TextView
     private val tabButtons = mutableMapOf<MediaType, Button>()
     private val handler = Handler(Looper.getMainLooper())
+    private var searchJob: Runnable? = null
+    private var loadJob = 0
+
     private val ticker = object : Runnable {
         override fun run() {
-            val changed = AppState.store.tick()
-            if (changed.isNotEmpty()) {
-                renderGrid()
-                renderRequestsCount()
+            if (AppState.liveMode) {
+                // live: refresh statuses in background every 5s; local-only requests still tick
+                AppState.store.tick()
+                Thread {
+                    runCatching { AppState.repo?.refreshStatuses(AppState.store) }
+                    handler.post { renderGrid(); renderRequestsCount() }
+                }.start()
+            } else {
+                val changed = AppState.store.tick()
+                if (changed.isNotEmpty()) {
+                    renderGrid()
+                    renderRequestsCount()
+                }
             }
-            handler.postDelayed(this, 1000)
+            handler.postDelayed(this, if (AppState.liveMode) 5000 else 1000)
         }
     }
 
@@ -74,16 +90,29 @@ class MainScreen(private val activity: Activity) {
                 activity.startActivity(Intent(activity, RequestsActivity::class.java))
             }
         }
+        val settingsBtn = Button(activity).apply {
+            text = "⚙"
+            setTextColor(Ui.ACCENT)
+            background = activity.pillBg(Ui.CARD_BG, 10)
+            setOnClickListener {
+                activity.startActivity(Intent(activity, SettingsActivity::class.java))
+            }
+            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            lp.marginStart = activity.dp(6)
+            layoutParams = lp
+        }
         header.addView(requestsBtn)
+        header.addView(settingsBtn)
         root.addView(header, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
 
-        // ---- placeholder banner ----
+        // ---- mode banner ----
         val banner = Ui.textView(
             activity,
-            "🧪 Placeholder mode: titles, posters, magnets and statuses are generated locally until Sonarr/Radarr/TMDB are connected.",
-            11f, Ui.BANNER_TEXT
+            if (AppState.liveMode) "🌐 Live mode: TMDB + Sonarr/Radarr + Prowlarr + Jellyfin"
+            else "🧪 Placeholder mode — tap ⚙ to connect your services.",
+            11f, if (AppState.liveMode) Ui.GREEN else Ui.BANNER_TEXT
         ).apply {
-            background = activity.pillBg(Ui.BANNER_BG, 6)
+            background = activity.pillBg(if (AppState.liveMode) 0xFFE6F4EA.toInt() else Ui.BANNER_BG, 6)
             val p = activity.dp(8); setPadding(p, p, p, p)
         }
         root.addView(banner, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
@@ -92,7 +121,7 @@ class MainScreen(private val activity: Activity) {
 
         // ---- search ----
         searchInput = EditText(activity).apply {
-            hint = "Search titles, genres, authors, magnets…"
+            hint = if (AppState.liveMode) "Search TMDB / Open Library…" else "Search titles, genres, authors, magnets…"
             setTextColor(Ui.TEXT)
             setHintTextColor(Ui.DIM)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
@@ -102,7 +131,9 @@ class MainScreen(private val activity: Activity) {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
                     query = s?.toString() ?: ""
-                    renderGrid()
+                    searchJob?.let { handler.removeCallbacks(it) }
+                    searchJob = Runnable { loadItems() }
+                    handler.postDelayed(searchJob!!, 400)
                 }
                 override fun afterTextChanged(s: Editable?) {}
             })
@@ -125,7 +156,7 @@ class MainScreen(private val activity: Activity) {
                     query = ""
                     searchInput.setText("")
                     renderTabs()
-                    renderGrid()
+                    loadItems()
                 }
             }
             tabRow.addView(b, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
@@ -138,28 +169,28 @@ class MainScreen(private val activity: Activity) {
         })
 
         // ---- grid ----
+        loading = Ui.textView(activity, "Loading…", 13f, Ui.DIM).apply {
+            visibility = View.GONE; gravity = Gravity.CENTER
+        }
         grid = GridLayout(activity).apply { columnCount = 3; useDefaultMargins = true }
         scroll = ScrollView(activity).apply { addView(grid) }
-        root.addView(scroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).apply {
-            topMargin = activity.dp(10)
-        })
         empty = Ui.textView(activity, "No titles match your search.", 14f, Ui.DIM).apply {
-            visibility = View.GONE
-            gravity = Gravity.CENTER
+            visibility = View.GONE; gravity = Gravity.CENTER
         }
-        root.addView(empty, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).apply {
+        val contentWrap = Ui.vRow(activity).apply {
+            addView(loading, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+            addView(scroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+            addView(empty, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        }
+        root.addView(contentWrap, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).apply {
             topMargin = activity.dp(10)
         })
 
         renderTabs()
-        renderGrid()
+        loadItems()
         renderRequestsCount()
         activity.setContentView(root)
         handler.postDelayed(ticker, 1000)
-    }
-
-    fun stop() {
-        handler.removeCallbacks(ticker)
     }
 
     private fun renderTabs() {
@@ -170,17 +201,39 @@ class MainScreen(private val activity: Activity) {
         }
     }
 
-    private fun items(): List<Media> =
-        if (query.isBlank()) AppState.catalog.ofType(currentTab)
-        else AppState.catalog.search(query) // global search across all tabs + magnet names
+    private fun loadItems() {
+        val myJob = ++loadJob
+        val live = AppState.liveMode
+        val q = query
+        if (live) {
+            loading.visibility = View.VISIBLE
+            scroll.visibility = View.GONE
+            empty.visibility = View.GONE
+            Thread {
+                val result = runCatching {
+                    if (q.isBlank()) AppState.repo!!.browse(currentTab)
+                    else AppState.repo!!.search(q)
+                }.getOrElse { emptyList() }
+                handler.post {
+                    if (myJob != loadJob) return@post
+                    loading.visibility = View.GONE
+                    AppState.repo?.remember(result)
+                    items = result
+                    renderGrid()
+                }
+            }.start()
+        } else {
+            items = if (q.isBlank()) AppState.catalog.ofType(currentTab) else AppState.catalog.search(q)
+            renderGrid()
+        }
+    }
 
     private fun renderGrid() {
         grid.removeAllViews()
-        val list = items()
-        val isEmpty = list.isEmpty()
-        empty.visibility = if (isEmpty) View.VISIBLE else View.GONE
+        val isEmpty = items.isEmpty()
+        empty.visibility = if (isEmpty && loading.visibility != View.VISIBLE) View.VISIBLE else View.GONE
         scroll.visibility = if (isEmpty) View.GONE else View.VISIBLE
-        list.forEach { m ->
+        items.forEach { m ->
             grid.addView(cardView(activity, m) { openDetail(activity, m.id) })
         }
     }
@@ -199,7 +252,17 @@ fun cardView(activity: Activity, m: Media, onClick: () -> Unit): View {
     }
 
     val frame = FrameLayout(activity)
-    frame.addView(PosterView(activity, m), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+    if (m.posterUrl != null) {
+        val img = ImageView(activity).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            adjustViewBounds = true
+            minimumHeight = activity.dp(150)
+        }
+        frame.addView(img, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+        ImageLoader.load(m.posterUrl!!, img)
+    } else {
+        frame.addView(PosterView(activity, m), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
+    }
 
     val rating = Ui.textView(activity, "★ %.1f".format(m.rating), 10f, Color.WHITE, bold = true).apply {
         background = activity.pillBg(0xAA000000.toInt(), 10)
@@ -226,7 +289,8 @@ fun cardView(activity: Activity, m: Media, onClick: () -> Unit): View {
     }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
         topMargin = activity.dp(4)
     })
-    col.addView(Ui.textView(activity, "${m.year} · ${m.genres.joinToString(", ")}", 10f, Ui.DIM).apply {
+    val sub = if (m.type == MediaType.AUDIOBOOKS && m.author != null) "${m.year} · ${m.author}" else "${m.year} · ${m.genres.joinToString(", ")}"
+    col.addView(Ui.textView(activity, sub, 10f, Ui.DIM).apply {
         maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
     })
 

@@ -1,6 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
   <uses-permission android:name="android.permission.INTERNET"/>
-  <application android:label="app-a" android:allowBackup="true" android:theme="@style/Theme.AppA">
+  <!-- LAN services (*arr, Prowlarr) are plain HTTP on 192.168.178.x -->
+  <application android:label="app-a" android:allowBackup="true" android:theme="@style/Theme.AppA"
+      android:usesCleartextTraffic="true">
     <activity android:name=".MainActivity" android:exported="true">
       <intent-filter>
         <action android:name="android.intent.action.MAIN"/>
@@ -9,5 +11,6 @@
     </activity>
     <activity android:name=".DetailActivity" android:exported="false"/>
     <activity android:name=".RequestsActivity" android:exported="false"/>
+    <activity android:name=".SettingsActivity" android:exported="false"/>
   </application>
 </manifest>

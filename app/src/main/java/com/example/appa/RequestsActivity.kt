@@ -9,17 +9,17 @@ import android.view.Gravity
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.TextView
 import android.widget.Toast
 
 /**
- * Requests screen: live list of requested titles with status pills that advance
- * pending -> processing -> available (simulated monitoring), persisted across
- * restarts. Polls the store every second.
+ * Requests screen: live list of requested titles with status pills.
+ * Live mode polls Jellyfin + *arr; placeholder mode uses the simulated ticker.
  */
 class RequestsActivity : Activity() {
 
     private lateinit var list: LinearLayout
-    private lateinit var countLabel: android.widget.TextView
+    private lateinit var countLabel: TextView
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var ticker: Runnable
 
@@ -48,7 +48,8 @@ class RequestsActivity : Activity() {
         root.addView(header, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         root.addView(Ui.textView(
             this,
-            "Live monitoring — pending → processing → available",
+            if (AppState.liveMode) "Live status from Jellyfin + Sonarr/Radarr (polled every 5s)"
+            else "Simulated monitoring — pending → processing → available",
             11f, Ui.DIM
         ).apply { val p = dp(4); setPadding(0, p, 0, 0) })
         root.addView(Ui.divider(this).apply {
@@ -66,9 +67,17 @@ class RequestsActivity : Activity() {
         render()
         ticker = object : Runnable {
             override fun run() {
-                val changed = AppState.store.tick()
-                if (changed.isNotEmpty()) render()
-                handler.postDelayed(this, 1000)
+                if (AppState.liveMode) {
+                    AppState.store.tick() // local-only (audiobook) requests still advance
+                    Thread {
+                        runCatching { AppState.repo?.refreshStatuses(AppState.store) }
+                        handler.post { render() }
+                    }.start()
+                    handler.postDelayed(this, 5000)
+                } else {
+                    if (AppState.store.tick().isNotEmpty()) render()
+                    handler.postDelayed(this, 1000)
+                }
             }
         }
         handler.postDelayed(ticker, 1000)
@@ -90,7 +99,7 @@ class RequestsActivity : Activity() {
             return
         }
         for (r in requests) {
-            val media = AppState.catalog.byId[r.mediaId] ?: continue
+            val media = AppState.mediaById(r.mediaId) ?: continue
             val row = Ui.hRow(this).apply {
                 gravity = Gravity.CENTER_VERTICAL
                 background = pillBg(Ui.CARD_BG, 8)
@@ -99,14 +108,23 @@ class RequestsActivity : Activity() {
                 lp.topMargin = dp(8)
                 layoutParams = lp
             }
-            row.addView(PosterView(this, media), LinearLayout.LayoutParams(dp(40), dp(60)))
+            if (media.posterUrl != null) {
+                val img = android.widget.ImageView(this).apply {
+                    scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
+                }
+                row.addView(img, LinearLayout.LayoutParams(dp(40), dp(60)))
+                ImageLoader.load(media.posterUrl!!, img)
+            } else {
+                row.addView(PosterView(this, media), LinearLayout.LayoutParams(dp(40), dp(60)))
+            }
             val info = Ui.vRow(this).apply {
                 val p = dp(10); setPadding(p, 0, 0, 0)
             }
             info.addView(Ui.textView(this, media.title, 13f, Ui.TEXT, bold = true))
             info.addView(Ui.textView(
                 this,
-                "${media.type.label} · ${media.year} · requested ${Ui.formatTime(r.requestedAt)}",
+                "${media.type.label} · ${media.year} · requested ${Ui.formatTime(r.requestedAt)}" +
+                    (if (r.external.isNotBlank()) " · ${r.external.substringBefore(":")}" else " · local"),
                 11f, Ui.DIM
             ).apply { val p = dp(2); setPadding(0, p, 0, 0) })
             row.addView(info, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))

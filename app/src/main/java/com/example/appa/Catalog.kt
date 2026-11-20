@@ -40,7 +40,9 @@ data class Media(
     val author: String? = null,
     val narrator: String? = null,
     val durationHours: Double? = null,
-    val available: Boolean = false
+    val available: Boolean = false,
+    val posterUrl: String? = null,   // live mode: remote poster (TMDB / OpenLibrary)
+    val externalId: String = ""      // live mode: tmdb id or openlibrary key
 )
 
 data class Magnet(
@@ -60,7 +62,8 @@ data class Request(
     val mediaId: String,
     val requestedAt: Long,
     val status: RequestStatus,
-    val statusUpdatedAt: Long
+    val statusUpdatedAt: Long,
+    val external: String = ""   // live mode: "radarr:<id>" / "sonarr:<id>"; "" = local-only (audiobooks)
 )
 
 /** pending --(pendingMs)--> processing --(processingMs)--> available */
@@ -94,12 +97,22 @@ class RequestStoreCore(
     fun count(): Int = synchronized(lock) { items.size }
 
     /** Returns null when the media already has a request. */
-    fun create(mediaId: String, now: Long = System.currentTimeMillis()): Request? = synchronized(lock) {
+    fun create(mediaId: String, now: Long = System.currentTimeMillis(), external: String = ""): Request? = synchronized(lock) {
         if (items.any { it.mediaId == mediaId }) return@synchronized null
-        val r = Request("req-" + UUID.randomUUID().toString().take(8), mediaId, now, RequestStatus.PENDING, now)
+        val r = Request("req-" + UUID.randomUUID().toString().take(8), mediaId, now, RequestStatus.PENDING, now, external)
         items.add(r)
         persist()
         r
+    }
+
+    /** Recreate a request with a new external id (used after a live *arr add). */
+    fun setExternal(id: String, external: String): Request? = synchronized(lock) {
+        val i = items.indexOfFirst { it.id == id }
+        if (i < 0) return@synchronized null
+        val u = items[i].copy(external = external)
+        items[i] = u
+        persist()
+        u
     }
 
     fun delete(id: String): Boolean = synchronized(lock) {
@@ -145,7 +158,12 @@ class RequestStoreCore(
                 val p = line.split("\t").map { it.replace("\\t", "\t").replace("\\n", "\n") }
                 if (p.size >= 5) {
                     runCatching {
-                        items.add(Request(p[0], p[1], p[2].toLong(), RequestStatus.valueOf(p[3]), p[4].toLong()))
+                        items.add(
+                            Request(
+                                p[0], p[1], p[2].toLong(), RequestStatus.valueOf(p[3]), p[4].toLong(),
+                                external = if (p.size > 5) p[5] else ""
+                            )
+                        )
                     }
                 }
             }
@@ -154,7 +172,7 @@ class RequestStoreCore(
 
     private fun persist() {
         val text = items.joinToString("\n") { r ->
-            listOf(r.id, r.mediaId, r.requestedAt.toString(), r.status.name, r.statusUpdatedAt.toString())
+            listOf(r.id, r.mediaId, r.requestedAt.toString(), r.status.name, r.statusUpdatedAt.toString(), r.external)
                 .joinToString("\t") { s -> s.replace("\t", "\\t").replace("\n", "\\n") }
         }
         save(text)
