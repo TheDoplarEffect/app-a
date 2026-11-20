@@ -32,8 +32,9 @@ class AuroraBackground(context: Context) : View(context) {
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         if (w > 0 && h > 0) {
-            val bw = (w / 6).coerceAtLeast(60)
-            val bh = (h / 6).coerceAtLeast(60)
+            // 1/8 scale + bilinear upscale + (API 31+) real blur = soft frosted backdrop
+            val bw = (w / 8).coerceAtLeast(48)
+            val bh = (h / 8).coerceAtLeast(48)
             bmp = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888)
             blobCanvas = Canvas(bmp!!)
         }
@@ -85,9 +86,11 @@ class AuroraBackground(context: Context) : View(context) {
 
     private fun drawBlob(canvas: Canvas, w: Float, h: Float, color: Int, fx: Float, fy: Float, rFrac: Float) {
         val r = maxOf(w, h) * rFrac
-        val alpha = 46 // subtle — glass surfaces sit on top
+        val alpha = 52 // subtle — glass surfaces sit on top
         blobPaint.shader = RadialGradient(w * fx, h * fy, r, withAlpha(color, alpha / 255f), withAlpha(color, 0f), Shader.TileMode.CLAMP)
         blobPaint.alpha = 255
+        // no per-paint blur in the SDK stub: the 1/8-res bitmap + bilinear upscale
+        // already renders the blobs as soft, frosted patches
         canvas.drawRect(0f, 0f, w, h, blobPaint)
         blobPaint.shader = null
     }

@@ -20,9 +20,13 @@ object ImageLoader {
     private val main = Handler(Looper.getMainLooper())
 
     fun load(url: String, view: ImageView) {
-        cache.get(url)?.let { view.setImageBitmap(it); return }
+        // cache hit: set synchronously, zero flicker on re-renders
+        cache.get(url)?.let { view.setImageBitmap(it); view.tag = url; return }
+        if (view.tag == url && view.drawable != null) return // already loading/showing this url
         view.tag = url
+        // neutral placeholder while loading (no white flash)
         view.setImageDrawable(null)
+        view.setBackgroundColor(AppTheme.current.colors.surfaceGlassStrong)
         executor.execute {
             val bmp = runCatching {
                 URL(url).openStream().use { BitmapFactory.decodeStream(it) }
@@ -30,8 +34,12 @@ object ImageLoader {
             if (bmp != null) cache.put(url, bmp)
             main.post {
                 if (view.tag == url) {
-                    if (bmp != null) view.setImageBitmap(bmp)
-                    else view.setBackgroundColor(0xFFE8EAED.toInt())
+                    if (bmp != null) {
+                        view.setImageBitmap(bmp)
+                        view.background = null
+                    } else {
+                        view.setBackgroundColor(AppTheme.current.colors.surfaceGlassStrong)
+                    }
                 }
             }
         }

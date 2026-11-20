@@ -217,9 +217,9 @@ data class NavItem(val icon: String, val label: String)
  * style). Exposes [select] to move the pill with a spring.
  */
 class BottomNavBar(private val ctx: Context, val items: List<NavItem>, initial: Int, t: DesignTokens = AppTheme.current, val onSelect: (Int) -> Unit) {
-    val root: FrameLayout = FrameLayout(ctx)
-    private val indicator: View
-    private val itemViews = mutableListOf<LinearLayout>()
+    val root: LinearLayout = row(ctx) { gravity = Gravity.CENTER }
+    private val cells = mutableListOf<FrameLayout>()
+    private val pills = mutableListOf<View>()
     var selected = initial
         private set
 
@@ -231,46 +231,56 @@ class BottomNavBar(private val ctx: Context, val items: List<NavItem>, initial: 
                 outline.setRoundRect(0, 0, view.width, view.height, ctx.dp(t.radius.card).toFloat())
             }
         }
-        val bar = row(ctx) { gravity = Gravity.CENTER_VERTICAL }
+        val p = ctx.dp(6); root.setPadding(p, p, p, p)
         items.forEachIndexed { i, item ->
-            val cell = col(ctx) {
+            // pill sits BEHIND the label inside the same cell -> always centered
+            val pill = View(ctx).apply {
+                background = ctx.accentGradient(t.radius.pill, t)
+                scaleX = 0f
+                alpha = 0f
+                elevation = ctx.dp(3).toFloat()
+            }
+            val label = col(ctx) {
                 gravity = Gravity.CENTER
                 addView(AppText(ctx, item.icon, TextStyle.TITLE, t = t))
                 addView(AppText(ctx, item.label, TextStyle.LABEL, t = t))
-                val p = ctx.dp(6); setPadding(p, p, p, p)
+            }
+            val cell = FrameLayout(ctx).apply {
+                val pad = ctx.dp(8)
+                label.setPadding(pad, pad, pad, pad)
+                addView(pill, FrameLayout.LayoutParams(MATCH, ctx.dp(48), Gravity.CENTER))
+                addView(label, FrameLayout.LayoutParams(WRAP, WRAP, Gravity.CENTER))
                 setOnClickListener { select(i) }
                 pressable()
             }
-            bar.addView(cell, LinearLayout.LayoutParams(0, WRAP, 1f))
-            itemViews.add(cell)
+            root.addView(cell, LinearLayout.LayoutParams(0, WRAP, 1f))
+            cells.add(cell); pills.add(pill)
         }
-        indicator = View(ctx).apply {
-            background = ctx.accentGradient(t.radius.pill, t)
-            elevation = ctx.dp(4).toFloat()
-        }
-        root.addView(indicator, FrameLayout.LayoutParams(0, ctx.dp(44)))
-        root.addView(bar, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.CENTER))
         root.post { select(initial, animate = false) }
     }
 
     fun select(i: Int, animate: Boolean = true) {
-        if (i == selected && animate) return
+        if (i == selected && pills.any { it.alpha > 0.5f }) return
         selected = i
-        val cell = itemViews[i]
-        itemViews.forEachIndexed { idx, v ->
-            val label = (v.getChildAt(1) as TextView)
-            val icon = (v.getChildAt(0) as TextView)
+        val m = AppTheme.current.motion
+        cells.forEachIndexed { idx, cell ->
             val active = idx == i
-            label.setTextColor(if (active) AppTheme.current.colors.textOnAccent else AppTheme.current.colors.textSecondary)
-            icon.setTextColor(if (active) AppTheme.current.colors.textOnAccent else AppTheme.current.colors.textSecondary)
-        }
-        root.post {
-            val targetX = cell.x + (cell.width - ctx.dp(64)) / 2f
-            val a = indicator.animate().x(targetX).setDuration(if (animate) AppTheme.current.motion.mediumMs else 0)
-            a.interpolator = if (animate) EmphasizedOvershoot else FastOutSlowIn
-            a.start()
-            indicator.layoutParams.width = ctx.dp(64)
-            indicator.requestLayout()
+            val pill = pills[idx]
+            val label = cell.getChildAt(1) as LinearLayout
+            val icon = label.getChildAt(0) as TextView
+            val text = label.getChildAt(1) as TextView
+            val c = AppTheme.current.colors
+            icon.setTextColor(if (active) c.textOnAccent else c.textSecondary)
+            text.setTextColor(if (active) c.textOnAccent else c.textSecondary)
+            if (animate) {
+                pill.animate().scaleX(if (active) 1f else 0f).alpha(if (active) 1f else 0f)
+                    .setDuration(if (active) m.mediumMs else m.shortMs)
+                    .setInterpolator(if (active) EmphasizedOvershoot else FastOutSlowIn)
+                    .start()
+            } else {
+                pill.scaleX = if (active) 1f else 0f
+                pill.alpha = if (active) 1f else 0f
+            }
         }
         onSelect(i)
     }

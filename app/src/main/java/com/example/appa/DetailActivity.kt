@@ -85,13 +85,17 @@ class DetailActivity : Activity() {
             content.addView(hero, lp(MATCH, WRAP))
             hero.popIn()
 
-            // live: fetch full details in background, then rebuild
-            if (AppState.liveMode && media.type != MediaType.AUDIOBOOKS) {
+            // live: fetch full details once in the background, then rebuild ONCE
+            // (guard prevents the old recreate-loop that made the poster flicker
+            // and killed the magnet search)
+            val needsDetails = AppState.liveMode && media.type != MediaType.AUDIOBOOKS &&
+                media.genres.isEmpty() && media.overview.isBlank()
+            if (needsDetails) {
                 Thread {
                     val d = runCatching { AppState.repo!!.details(media) }.getOrDefault(media)
                     handler.post {
                         AppState.repo?.remember(listOf(d))
-                        if (d.id == mediaId && !isFinishing) recreate()
+                        if (d.id == mediaId && d != media && !isFinishing) recreate()
                     }
                 }.start()
             }
@@ -203,9 +207,12 @@ class DetailActivity : Activity() {
         if (AppState.liveMode) {
             magnetsHeader.text = "🧲 Magnets — searching indexers…"
             Thread {
-                val mags = runCatching { AppState.repo!!.magnetsFor(media) }.getOrElse { emptyList() }
+                val res = runCatching { AppState.repo!!.magnetsFor(media) }
+                val mags = res.getOrElse { emptyList() }
                 handler.post {
-                    magnetsHeader.text = "🧲 Magnets (${mags.size})"
+                    magnetsHeader.text = if (res.isFailure)
+                        "🧲 Magnets — search failed: ${res.exceptionOrNull()?.message?.take(100)}"
+                    else "🧲 Magnets (${mags.size})"
                     renderMagnets(mags, t)
                 }
             }.start()
