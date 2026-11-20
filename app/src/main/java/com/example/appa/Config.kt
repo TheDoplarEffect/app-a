@@ -1,6 +1,7 @@
 package com.example.appa
 
-import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 
 /**
  * User-supplied service configuration. Stored encrypted on-device (see
@@ -48,32 +49,26 @@ data class AppConfig(
     val liveReady: Boolean
         get() = liveMode && hasTmdb && (hasSonarr || hasRadarr)
 
-    fun toJson(): String = kotlinx.serialization.json.buildJsonObject {
-            val p = { k: String, v: String -> put(k, kotlinx.serialization.json.JsonPrimitive(v)) }
+    fun toJson(): String = buildJsonObject {
+            val p = { k: String, v: String -> put(k, JsonPrimitive(v)) }
             p("tmdbToken", tmdbToken)
             p("sonarrUrl", sonarrUrl); p("sonarrKey", sonarrKey)
             p("radarrUrl", radarrUrl); p("radarrKey", radarrKey)
             p("prowlarrUrl", prowlarrUrl); p("prowlarrKey", prowlarrKey)
             p("jellyfinUrl", jellyfinUrl); p("jellyfinKey", jellyfinKey)
-            put("liveMode", kotlinx.serialization.json.JsonPrimitive(liveMode))
+            put("liveMode", JsonPrimitive(liveMode))
         }.toString()
 
     companion object {
-        private val json = Json { ignoreUnknownKeys = true }
-
         fun fromJson(text: String): AppConfig = runCatching {
-            val o = json.parseToJsonElement(text).let {
-                @Suppress("UNCHECKED_CAST")
-                it as kotlinx.serialization.json.JsonObject
-            }
-            val g = { k: String -> o[k]?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content } ?: "" }
+            val o = jsonX.parseToJsonElement(text).obj()
             AppConfig(
-                tmdbToken = g("tmdbToken"),
-                sonarrUrl = g("sonarrUrl"), sonarrKey = g("sonarrKey"),
-                radarrUrl = g("radarrUrl"), radarrKey = g("radarrKey"),
-                prowlarrUrl = g("prowlarrUrl"), prowlarrKey = g("prowlarrKey"),
-                jellyfinUrl = g("jellyfinUrl"), jellyfinKey = g("jellyfinKey"),
-                liveMode = o["liveMode"]?.let { (it as kotlinx.serialization.json.JsonPrimitive).content == "true" } ?: false
+                tmdbToken = o["tmdbToken"].str(),
+                sonarrUrl = o["sonarrUrl"].str(), sonarrKey = o["sonarrKey"].str(),
+                radarrUrl = o["radarrUrl"].str(), radarrKey = o["radarrKey"].str(),
+                prowlarrUrl = o["prowlarrUrl"].str(), prowlarrKey = o["prowlarrKey"].str(),
+                jellyfinUrl = o["jellyfinUrl"].str(), jellyfinKey = o["jellyfinKey"].str(),
+                liveMode = o["liveMode"].str() == "true"
             )
         }.getOrDefault(AppConfig())
     }

@@ -29,21 +29,22 @@ fun glassDrawable(context: Context, radiusDp: Int, strong: Boolean = false, t: D
 fun glassLayered(context: Context, radiusDp: Int, strong: Boolean = false, t: DesignTokens = AppTheme.current): Drawable {
     val r = context.dp(radiusDp).toFloat()
     val darkBg = luminance(t.colors.background) < 0.5
-    val borderHi = if (darkBg) 0x40FFFFFF.toInt() else 0x30000000.toInt()  // bright top edge
-    val borderLo = if (darkBg) 0x10FFFFFF.toInt() else 0x0D000000.toInt()  // fades down
+    // border color comes from the token, brightened for the top edge (no dead ternary)
+    val borderHi = scaledAlpha(t.colors.glassBorder, if (darkBg) 1.6f else 1.0f)
+    val borderLo = scaledAlpha(t.colors.glassBorder, if (darkBg) 0.4f else 0.6f)
     val border = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(borderHi, borderLo)).apply {
         cornerRadius = r
     }
     val base = if (strong) t.colors.surfaceGlassStrong else t.colors.surfaceGlass
-    val fillTop = withAlpha(if (darkBg) 0xFFFFFFFF.toInt() else 0xFFFFFFFF.toInt(), ((base ushr 24) + if (strong) 26 else 16) / 255f)
-    val fillBottom = base
-    val fill = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(fillTop, fillBottom)).apply {
+    val fillTop = withAlpha(if (darkBg) 0xFFFFFFFF.toInt() else 0xFF000000.toInt(), ((base ushr 24) + if (strong) 26 else 16) / 255f)
+    val fill = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(fillTop, base)).apply {
         cornerRadius = r - context.dp(1)
     }
     val insetFill = InsetDrawable(fill, context.dp(1))
+    val sheenColor = if (darkBg) 0xFFFFFFFF.toInt() else 0xFF000000.toInt()
     val sheen = GradientDrawable(
         GradientDrawable.Orientation.TL_BR,
-        intArrayOf(0x1AFFFFFF.toInt(), 0x00FFFFFF, 0x00FFFFFF)
+        intArrayOf(withAlpha(sheenColor, 0.10f), withAlpha(sheenColor, 0f), withAlpha(sheenColor, 0f))
     ).apply { cornerRadius = r }
     return LayerDrawable(arrayOf(border, insetFill, sheen))
 }

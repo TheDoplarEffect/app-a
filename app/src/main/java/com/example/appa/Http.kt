@@ -1,14 +1,14 @@
 package com.example.appa
 
-import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
+import java.net.InetAddress
 import java.net.URL
 
 /** Minimal HTTP layer on java.net (works on Android and the JVM for tests). */
 
 data class Resp(val status: Int, val body: String, val bytes: ByteArray, val headers: Map<String, List<String>>) {
     fun header(name: String): String? =
-        headers.entries.firstOrNull { it.key.equals(name, ignoreCase = true) }?.value?.firstOrNull()
+        headers.entries.firstOrNull { it.key?.equals(name, ignoreCase = true) == true }?.value?.firstOrNull()
     val ok: Boolean get() = status in 200..299
     /** True when the request never reached the server (timeout, DNS, refused…). */
     val networkError: Boolean get() = status == 0
@@ -16,32 +16,88 @@ data class Resp(val status: Int, val body: String, val bytes: ByteArray, val hea
 
 typealias HttpTransport = (method: String, url: String, headers: Map<String, String>, body: String?, followRedirects: Boolean) -> Resp
 
+private const val MAX_REDIRECTS = 5
+/** Headers that must never be forwarded to a different host on redirect. */
+private val SENSITIVE_HEADERS = setOf("authorization", "x-api-key", "cookie", "proxy-authorization")
+
+private fun hostOf(url: String): String? = runCatching { URL(url).host }.getOrNull()
+
+private fun sameHost(a: String, b: String): Boolean {
+    val ha = hostOf(a) ?: return false
+    val hb = hostOf(b) ?: return false
+    return ha.equals(hb, ignoreCase = true)
+}
+
+/**
+ * SSRF guard for URLs that come from external services (e.g. a Prowlarr
+ * `downloadUrl`): must be http(s), carry no embedded credentials, and must
+ * not resolve to loopback / link-local / cloud-metadata addresses.
+ */
+fun isSafeExternalUrl(url: String): Boolean {
+    val u = runCatching { URL(url) }.getOrNull() ?: return false
+    if (u.protocol != "http" && u.protocol != "https") return false
+    if (u.userInfo != null) return false
+    val host = u.host
+    if (host.isEmpty()) return false
+    if (host.equals("metadata.google.internal", ignoreCase = true)) return false
+    return runCatching {
+        // reject loopback / link-local (incl. cloud metadata 169.254.169.254);
+        // site-local (LAN) stays allowed — the user's own *arr stack is on the LAN
+        InetAddress.getAllByName(host).all { !it.isLoopbackAddress && !it.isLinkLocalAddress }
+    }.getOrElse { false }
+}
+
 /**
  * Real transport backed by HttpURLConnection. TOTAL: never throws — an
  * IOException becomes [Resp] with status 0 ("network error"), so callers
  * don't each need their own runCatching.
+ *
+ * Redirects are followed MANUALLY (never via instanceFollowRedirects, which
+ * would forward Authorization/X-Api-Key to any host): sensitive headers are
+ * dropped when the redirect crosses hosts.
  */
 val realHttp: HttpTransport = { method, url, headers, body, followRedirects ->
     runCatching {
-        val conn = URL(url).openConnection() as HttpURLConnection
-        try {
-            conn.requestMethod = method
-            conn.connectTimeout = 15_000
-            conn.readTimeout = 20_000
-            conn.instanceFollowRedirects = followRedirects
-            headers.forEach { (k, v) -> conn.setRequestProperty(k, v) }
-            if (body != null) {
-                conn.doOutput = true
-                conn.setRequestProperty("Content-Type", "application/json")
-                conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+        var currentUrl = url
+        var currentHeaders = headers
+        var resp: Resp
+        var hops = 0
+        while (true) {
+            val conn = URL(currentUrl).openConnection() as HttpURLConnection
+            try {
+                conn.requestMethod = method
+                conn.connectTimeout = 15_000
+                conn.readTimeout = 20_000
+                conn.instanceFollowRedirects = false // manual, see above
+                currentHeaders.forEach { (k, v) -> conn.setRequestProperty(k, v) }
+                if (body != null && method != "GET" && method != "HEAD") {
+                    conn.doOutput = true
+                    if (currentHeaders.keys.none { it.equals("Content-Type", ignoreCase = true) })
+                        conn.setRequestProperty("Content-Type", "application/json")
+                    conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+                }
+                val status = conn.responseCode
+                val stream = if (status >= 400) conn.errorStream else conn.inputStream
+                val bytes = stream?.use { it.readBytes() } ?: ByteArray(0)
+                // headerFields contains a null key for the status line — drop it (NPE guard)
+                resp = Resp(status, String(bytes, Charsets.UTF_8), bytes,
+                    conn.headerFields.filterKeys { it != null }.mapValues { it.value ?: emptyList() })
+            } finally {
+                conn.disconnect()
             }
-            val status = conn.responseCode
-            val stream = if (status >= 400) conn.errorStream else conn.inputStream
-            val bytes = stream?.use { it.readBytes() } ?: ByteArray(0)
-            Resp(status, String(bytes, Charsets.UTF_8), bytes, conn.headerFields.mapValues { it.value ?: emptyList() })
-        } finally {
-            conn.disconnect()
+            val loc = if (resp.status in 300..399) resp.header("Location") else null
+            if (followRedirects && loc != null && hops < MAX_REDIRECTS) {
+                val next = runCatching { URL(URL(currentUrl), loc).toString() }.getOrNull()
+                if (next == null) break
+                if (!sameHost(currentUrl, next))
+                    currentHeaders = currentHeaders.filterKeys { !SENSITIVE_HEADERS.contains(it.lowercase()) }
+                currentUrl = next
+                hops++
+                continue
+            }
+            break
         }
+        resp
     }.getOrElse { Resp(0, "", ByteArray(0), emptyMap()) }
 }
 
@@ -51,6 +107,7 @@ val realHttp: HttpTransport = { method, url, headers, body, followRedirects ->
  * else falls back to the download URL so we never hand out a random HTML page.
  */
 fun magnetFromDownloadUrl(downloadUrl: String, http: HttpTransport = realHttp): String {
+    if (!isSafeExternalUrl(downloadUrl)) return downloadUrl
     val resp = http("GET", downloadUrl, mapOf("User-Agent" to "Mozilla/5.0"), null, false)
     if (resp.status in 300..399) {
         val loc = resp.header("Location") ?: return downloadUrl

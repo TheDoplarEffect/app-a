@@ -42,10 +42,7 @@ class AuroraBackground(context: Context) : View(context) {
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
-        val reduceMotion = android.provider.Settings.Global.getFloat(
-            context.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f
-        ) == 0f
-        if (reduceMotion) {
+        if (context.reduceMotion()) {
             t = 0.37f
             invalidate() // one static frame, no animation loop
             return

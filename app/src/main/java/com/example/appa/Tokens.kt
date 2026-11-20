@@ -25,7 +25,8 @@ data class ColorTokens(
     val textOnAccent: Int,
     val accentStart: Int,           // gradient start (buttons, active pill)
     val accentEnd: Int,
-    val accentSolid: Int,
+    val accentSolid: Int,           // solid accent fill (white text on it must pass)
+    val accentText: Int,            // accent as TEXT on glass surfaces (must pass vs background)
     val success: Int, val warning: Int, val error: Int, val info: Int,
     val scrimTop: Int,              // poster scrim gradient (transparent)
     val scrimBottom: Int,           // poster scrim gradient (opaque-ish)
@@ -57,7 +58,8 @@ data class RadiusTokens(
     val card: Int,     // glass cards
     val button: Int,   // buttons / fields
     val sheet: Int,    // bottom sheets / hero
-    val pill: Int      // chips, badges (fully rounded)
+    val pill: Int,     // chips, badges (fully rounded)
+    val thumb: Int     // small thumbnails (request rows)
 )
 
 // ------------------------------------------------------------------ motion
@@ -102,12 +104,13 @@ val CrystalGlassDark = DesignTokens(
         textPrimary = 0xFFF2F5FF.toInt(),
         textSecondary = 0xFFAAB4CE.toInt(),
         textOnAccent = 0xFFFFFFFF.toInt(),
-        accentStart = 0xFF818CF8.toInt(),  // indigo-400
-        accentEnd = 0xFFC084FC.toInt(),    // purple-400
+        accentStart = 0xFF4F46E5.toInt(),  // indigo-600: white label passes WCAG AA on the whole gradient
+        accentEnd = 0xFF9333EA.toInt(),    // purple-600
         accentSolid = 0xFF6D5AE0.toInt(),  // dark enough for white text (WCAG AA, 5:1)
+        accentText = 0xFFA5B4FC.toInt(),   // indigo-300: accent-as-text on dark glass (WCAG AA)
         success = 0xFF34D399.toInt(),
         warning = 0xFFFBBF24.toInt(),
-        error = 0xFFFB7185.toInt(),
+        error = 0xFFFCA5A5.toInt(),        // light enough to pass on the 22%-tinted dark chip
         info = 0xFF38BDF8.toInt(),
         scrimTop = 0x00000000,
         scrimBottom = 0xD9000000.toInt(),
@@ -115,7 +118,7 @@ val CrystalGlassDark = DesignTokens(
     ),
     type = TypeTokens(displaySp = 28f, headlineSp = 22f, titleSp = 17f, bodySp = 14f, labelSp = 11f),
     space = SpaceTokens(xs = 4, sm = 8, md = 12, lg = 16, xl = 24, xxl = 32),
-    radius = RadiusTokens(poster = 20, card = 24, button = 16, sheet = 32, pill = 999),
+    radius = RadiusTokens(poster = 20, card = 24, button = 16, sheet = 32, pill = 999, thumb = 12),
     motion = MotionTokens(instantMs = 80, shortMs = 160, mediumMs = 300, longMs = 500),
     elevation = ElevationTokens(level1Dp = 4f, level2Dp = 12f, level3Dp = 24f, shadowColor = 0x66000000.toInt())
 )
@@ -134,13 +137,14 @@ val PorcelainLight = DesignTokens(
         textPrimary = 0xFF101828.toInt(),
         textSecondary = 0xFF475467.toInt(),
         textOnAccent = 0xFFFFFFFF.toInt(),
-        accentStart = 0xFF6366F1.toInt(),
-        accentEnd = 0xFF8B5CF6.toInt(),
+        accentStart = 0xFF4F46E5.toInt(),  // white label passes on the whole gradient
+        accentEnd = 0xFF9333EA.toInt(),
         accentSolid = 0xFF5B4BD6.toInt(),  // dark enough for white text (WCAG AA)
-        success = 0xFF047857.toInt(),   // darkened for WCAG AA on light bg
-        warning = 0xFFB45309.toInt(),
-        error = 0xFFBE123C.toInt(),
-        info = 0xFF0369A1.toInt(),
+        accentText = 0xFF4F46E5.toInt(),   // accent-as-text on light glass (WCAG AA)
+        success = 0xFF036B4C.toInt(),   // darkened to pass on the 22%-tinted light chip
+        warning = 0xFF92400E.toInt(),
+        error = 0xFF9F1239.toInt(),
+        info = 0xFF075985.toInt(),
         scrimTop = 0x00000000,
         scrimBottom = 0xD9000000.toInt(),
         chipScrim = 0xB3000000.toInt()
@@ -169,6 +173,12 @@ fun withAlpha(color: Int, alpha: Float): Int {
     return (color and 0x00FFFFFF) or (a shl 24)
 }
 
+/** Scale the existing alpha channel by [factor] (may exceed 1, clamps at 255). Keeps the RGB from the token. */
+fun scaledAlpha(color: Int, factor: Float): Int {
+    val a = ((color ushr 24) * factor).toInt().coerceIn(0, 255)
+    return (color and 0x00FFFFFF) or (a shl 24)
+}
+
 private fun srgbToLinear(c: Int): Double {
     val v = c / 255.0
     return if (v <= 0.04045) v / 12.92 else Math.pow((v + 0.055) / 1.055, 2.4)
@@ -189,4 +199,13 @@ fun contrastRatio(c1: Int, c2: Int): Double {
     val hi = maxOf(l1, l2)
     val lo = minOf(l1, l2)
     return (hi + 0.05) / (lo + 0.05)
+}
+
+/** Alpha-composite [fg] (ARGB with alpha) over opaque [bg]. */
+fun compositeOver(fg: Int, bg: Int): Int {
+    val a = (fg ushr 24) / 255f
+    val r = ((fg shr 16) and 0xFF) * a + ((bg shr 16) and 0xFF) * (1 - a)
+    val g = ((fg shr 8) and 0xFF) * a + ((bg shr 8) and 0xFF) * (1 - a)
+    val b = (fg and 0xFF) * a + (bg and 0xFF) * (1 - a)
+    return 0xFF000000.toInt() or ((r.toInt() shl 16) or (g.toInt() shl 8) or b.toInt())
 }
