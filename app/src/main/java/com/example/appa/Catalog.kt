@@ -1,9 +1,11 @@
 package com.example.appa
 
-import java.net.URLEncoder
 import java.security.MessageDigest
 import java.util.UUID
 import kotlin.random.Random
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 /**
  * Pure-Kotlin core of the app: placeholder catalog, magnets, request store and
@@ -63,8 +65,62 @@ data class Request(
     val requestedAt: Long,
     val status: RequestStatus,
     val statusUpdatedAt: Long,
-    val external: String = ""   // live mode: "radarr:<id>" / "sonarr:<id>"; "" = local-only (audiobooks)
+    val external: String = "",   // live mode: "radarr:<id>" / "sonarr:<id>"; "" = local-only (audiobooks)
+    val snapshot: String = ""    // JSON MediaSnapshot — keeps the request readable after a cold start
 )
+
+/** External *arr reference. Wire format is "kind:id" (e.g. "radarr:42"). */
+data class ExternalRef(val kind: String, val id: String) {
+    override fun toString(): String = "$kind:$id"
+    companion object {
+        fun parse(s: String): ExternalRef? {
+            val i = s.indexOf(':')
+            if (i <= 0 || i == s.length - 1) return null
+            return ExternalRef(s.substring(0, i), s.substring(i + 1))
+        }
+    }
+}
+
+/**
+ * Minimal media snapshot persisted with each request, so the Requests screen
+ * still shows title/poster after a cold start (when the live media cache is
+ * empty and the placeholder catalog doesn't contain the id).
+ */
+data class MediaSnapshot(
+    val title: String,
+    val type: String,
+    val year: Int,
+    val rating: Double = 0.0,
+    val posterUrl: String? = null
+) {
+    fun toJson(): String = buildJsonObject {
+        put("title", title); put("type", type); put("year", year)
+        put("rating", rating); put("posterUrl", posterUrl ?: "")
+    }.toString()
+
+    fun toMedia(id: String): Media = Media(
+        id = id,
+        type = MediaType.fromSlug(type) ?: MediaType.AUDIOBOOKS,
+        title = title,
+        year = year,
+        overview = "",
+        genres = emptyList(),
+        rating = rating,
+        color1 = "#1f6feb", color2 = "#8250df",
+        posterUrl = posterUrl?.ifBlank { null }
+    )
+
+    companion object {
+        fun of(m: Media): MediaSnapshot = MediaSnapshot(m.title, m.type.slug, m.year, m.rating, m.posterUrl)
+        fun fromJson(s: String): MediaSnapshot? = runCatching {
+            val o = jsonX.parseToJsonElement(s).obj()
+            MediaSnapshot(
+                o["title"].str(), o["type"].str(), o["year"].str().toIntOrNull() ?: 0,
+                o["rating"].str().toDoubleOrNull() ?: 0.0, o["posterUrl"].str().ifBlank { null }
+            )
+        }.getOrNull()
+    }
+}
 
 /** pending --(pendingMs)--> processing --(processingMs)--> available */
 object StatusRules {
@@ -78,8 +134,8 @@ object StatusRules {
 
 /**
  * Thread-safe request store. Persistence is delegated to load/save lambdas
- * (SharedPreferences on Android, in-memory in tests) using a simple
- * tab-separated line format.
+ * (SharedPreferences on Android, in-memory in tests). Format is a JSON array;
+ * the legacy tab-separated format is still READ for one migration release.
  */
 class RequestStoreCore(
     private val load: () -> String?,
@@ -97,9 +153,9 @@ class RequestStoreCore(
     fun count(): Int = synchronized(lock) { items.size }
 
     /** Returns null when the media already has a request. */
-    fun create(mediaId: String, now: Long = System.currentTimeMillis(), external: String = ""): Request? = synchronized(lock) {
+    fun create(mediaId: String, now: Long = System.currentTimeMillis(), external: String = "", snapshot: String = ""): Request? = synchronized(lock) {
         if (items.any { it.mediaId == mediaId }) return@synchronized null
-        val r = Request("req-" + UUID.randomUUID().toString().take(8), mediaId, now, RequestStatus.PENDING, now, external)
+        val r = Request("req-" + UUID.randomUUID().toString().take(8), mediaId, now, RequestStatus.PENDING, now, external, snapshot)
         items.add(r)
         persist()
         r
@@ -153,6 +209,26 @@ class RequestStoreCore(
         synchronized(lock) {
             items.clear()
             val text = load() ?: return@synchronized
+            if (text.trimStart().startsWith("[")) {
+                // current format: JSON array
+                runCatching {
+                    jsonX.parseToJsonElement(text).arr().forEach { el ->
+                        val o = el.obj()
+                        items.add(
+                            Request(
+                                o["id"].str(), o["mediaId"].str(),
+                                o["requestedAt"].str().toLongOrNull() ?: 0L,
+                                runCatching { RequestStatus.valueOf(o["status"].str()) }.getOrDefault(RequestStatus.PENDING),
+                                o["statusUpdatedAt"].str().toLongOrNull() ?: 0L,
+                                external = o["external"].str(),
+                                snapshot = o["snapshot"].str()
+                            )
+                        )
+                    }
+                }
+                return@synchronized
+            }
+            // legacy format: TSV lines (read-only fallback for one release)
             for (line in text.split("\n")) {
                 if (line.isBlank()) continue
                 val p = line.split("\t").map { it.replace("\\t", "\t").replace("\\n", "\n") }
@@ -171,11 +247,18 @@ class RequestStoreCore(
     }
 
     private fun persist() {
-        val text = items.joinToString("\n") { r ->
-            listOf(r.id, r.mediaId, r.requestedAt.toString(), r.status.name, r.statusUpdatedAt.toString(), r.external)
-                .joinToString("\t") { s -> s.replace("\t", "\\t").replace("\n", "\\n") }
+        val arr = buildJsonArray {
+            for (r in items) add(buildJsonObject {
+                put("id", r.id)
+                put("mediaId", r.mediaId)
+                put("requestedAt", r.requestedAt)
+                put("status", r.status.name)
+                put("statusUpdatedAt", r.statusUpdatedAt)
+                put("external", r.external)
+                put("snapshot", r.snapshot)
+            })
         }
-        save(text)
+        save(arr.toString())
     }
 }
 
@@ -287,7 +370,7 @@ object Catalog {
                 seeders = rnd.nextInt(5, 4200),
                 leechers = rnd.nextInt(0, 420),
                 source = "PlaceholderIndex ${'A' + rnd.nextInt(5)}",
-                magnetUri = "magnet:?xt=urn:btih:$hash&dn=${urlEncode(name)}" +
+                magnetUri = "magnet:?xt=urn:btih:$hash&dn=${qenc(name)}" +
                     "&tr=udp%3A%2F%2Ftracker.placeholder.local%3A1337%2Fannounce",
                 addedAt = base + i.toLong() * 86_400_000L * 7L
             )
@@ -298,9 +381,6 @@ object Catalog {
         val digest = MessageDigest.getInstance("SHA-256").digest(input.toByteArray(Charsets.UTF_8))
         return digest.joinToString("") { "%02x".format(it) }
     }
-
-    private fun urlEncode(s: String): String =
-        URLEncoder.encode(s, Charsets.UTF_8.name()).replace("+", "%20")
 }
 
 fun formatSize(bytes: Long): String {

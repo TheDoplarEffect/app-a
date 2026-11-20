@@ -46,7 +46,7 @@ class LiveRepository(private val cfg: AppConfig, private val http: HttpTransport
 
     // Resolved lazily on first use (NOT in the constructor — AppState builds the
     // repo on the main thread and a blocking call here is a NetworkOnMainThread ANR).
-    private var audiobookIndexerIds: String? = null
+    @Volatile private var audiobookIndexerIds: String? = null
     @Volatile private var cachedMovieTmdbIds: Set<String> = emptySet()
     @Volatile private var cachedSeriesTmdbIds: Set<String> = emptySet()
 
@@ -129,11 +129,11 @@ class LiveRepository(private val cfg: AppConfig, private val http: HttpTransport
     fun request(media: Media): String = when (media.type) {
         MediaType.MOVIES -> {
             if (!cfgN.hasRadarr) throw ApiException("Radarr not configured")
-            "radarr:${radarr.addMovie(media.externalId)}"
+            ExternalRef("radarr", radarr.addMovie(media.externalId).toString()).toString()
         }
         MediaType.SERIES -> {
             if (!cfgN.hasSonarr) throw ApiException("Sonarr not configured")
-            "sonarr:${sonarr.addSeries(media.externalId, media.title)}"
+            ExternalRef("sonarr", sonarr.addSeries(media.externalId, media.title).toString()).toString()
         }
         MediaType.AUDIOBOOKS -> "" // no Readarr; tracked locally only
     }
@@ -158,17 +158,11 @@ class LiveRepository(private val cfg: AppConfig, private val http: HttpTransport
                 MediaType.SERIES -> media.externalId in cachedSeriesTmdbIds
                 MediaType.AUDIOBOOKS -> false
             }
-            val (hasFile, inQueue) = when {
-                r.external.startsWith("radarr:") -> {
-                    val id = r.external.removePrefix("radarr:").toIntOrNull() ?: -1
-                    val st = radarrStates.firstOrNull { it.first == id }
-                    (st?.third ?: false) to (id in radarrQueue)
-                }
-                r.external.startsWith("sonarr:") -> {
-                    val id = r.external.removePrefix("sonarr:").toIntOrNull() ?: -1
-                    val st = sonarrStates.firstOrNull { it.first == id }
-                    (st?.third ?: false) to (id in sonarrQueue)
-                }
+            val ref = ExternalRef.parse(r.external) ?: continue
+            val id = ref.id.toIntOrNull() ?: -1
+            val (hasFile, inQueue) = when (ref.kind) {
+                "radarr" -> (radarrStates.firstOrNull { it.radarrId == id }?.hasFile ?: false) to (id in radarrQueue)
+                "sonarr" -> (sonarrStates.firstOrNull { it.sonarrId == id }?.hasFiles ?: false) to (id in sonarrQueue)
                 else -> false to false
             }
             val target = LiveStatus.compute(inJellyfin, hasFile, inQueue)
@@ -198,5 +192,13 @@ class LiveRepository(private val cfg: AppConfig, private val http: HttpTransport
         }
         mediaCache[m.id] = m
         return m
+    }
+}
+
+/** Single construction rule for the live repository (null when live mode can't run). */
+object RepositoryFactory {
+    fun create(cfg: AppConfig, http: HttpTransport = realHttp): LiveRepository? {
+        val n = cfg.normalized()
+        return if (n.liveReady) LiveRepository(n, http) else null
     }
 }

@@ -13,24 +13,8 @@ import kotlinx.serialization.json.jsonPrimitive
  * Live service clients (TMDB, Open Library, Prowlarr, Sonarr, Radarr, Jellyfin).
  * Pure Kotlin: all take an injectable [HttpTransport] so they are testable on
  * the JVM, and parse responses via kotlinx.serialization JsonElement (no
- * compiler plugin needed).
+ * compiler plugin needed). Shared JSON accessors live in JsonX.kt.
  */
-
-private val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
-
-private fun JsonElement?.str(def: String = ""): String =
-    if (this == null || this == kotlinx.serialization.json.JsonNull) def
-    else (this as? JsonPrimitive)?.content?.trim() ?: def
-
-private fun JsonElement?.dbl(def: Double = 0.0): Double =
-    (this as? JsonPrimitive)?.content?.toDoubleOrNull() ?: def
-
-private fun JsonElement?.int(def: Int = 0): Int =
-    (this as? JsonPrimitive)?.content?.toIntOrNull() ?: def
-
-private fun JsonElement?.arr(): JsonArray = (this as? JsonArray) ?: JsonArray(emptyList())
-
-private fun JsonElement?.obj(): JsonObject = (this as? JsonObject) ?: JsonObject(emptyMap())
 
 // ---------------------------------------------------------------- TMDB
 
@@ -206,23 +190,55 @@ class ProwlarrClient(private val baseUrl: String, private val apiKey: String, pr
             )
         }
     }
-
 }
 
-// ---------------------------------------------------------------- Sonarr / Radarr
+// ---------------------------------------------------------------- Sonarr / Radarr (shared base)
 
-class SonarrClient(private val baseUrl: String, private val apiKey: String, private val http: HttpTransport = realHttp) {
-    private val headers = mapOf("X-Api-Key" to apiKey)
-    private fun url(path: String, params: String) =
+/**
+ * Shared plumbing for the *arr apps: URL building, authenticated GET with
+ * retry, POST with JSON, and the two lookups the write path depends on.
+ * The write-path lookups THROW on failure — a silent "/tv"/"1" default would
+ * produce a wrong write with no error (Ousterhout: don't mask exceptions).
+ */
+private abstract class ArrClient(
+    protected val baseUrl: String,
+    apiKey: String,
+    protected val http: HttpTransport,
+    private val serviceName: String
+) {
+    protected val headers = mapOf("X-Api-Key" to apiKey)
+
+    fun url(path: String, params: String) =
         "$baseUrl$path" + (if (params.isBlank()) "" else "?$params")
-    private fun api(path: String, params: String = ""): JsonElement =
+
+    fun api(path: String, params: String = ""): JsonElement =
         httpGetJsonRetrying(url(path, params), headers, http)
 
-    private fun post(path: String, body: String): JsonElement {
+    fun post(path: String, body: String): JsonElement {
         val resp = http("POST", url(path, ""), headers + ("Content-Type" to "application/json"), body, true)
-        if (!resp.ok) throw ApiException("Sonarr HTTP ${resp.status}: ${resp.body.take(200)}", resp.status)
-        return json.parseToJsonElement(resp.body)
+        if (!resp.ok) throw ApiException("$serviceName HTTP ${resp.status}: ${resp.body.take(200)}", resp.status)
+        return jsonX.parseToJsonElement(resp.body)
     }
+
+    fun rootFolder(): String =
+        api("/api/v3/rootfolder").arr().firstOrNull()?.obj()?.get("path").str()
+            .takeIf { it.isNotBlank() }
+            ?: throw ApiException("$serviceName: no root folder configured")
+
+    fun qualityProfileId(): Int =
+        api("/api/v3/qualityprofile").arr().firstOrNull()?.obj()?.get("id").int(-1)
+            .takeIf { it > 0 }
+            ?: throw ApiException("$serviceName: no quality profile configured")
+}
+
+/** Sonarr series library state. */
+data class SeriesState(val sonarrId: Int, val tvdbId: Int, val hasFiles: Boolean)
+
+/** Radarr movie library state. */
+data class MovieState(val radarrId: Int, val tmdbId: String, val hasFile: Boolean)
+
+class SonarrClient(baseUrl: String, apiKey: String, http: HttpTransport = realHttp) :
+    ArrClient(baseUrl, apiKey, http, "Sonarr") {
 
     /** Look up a series by TMDB id -> returns tvdbId + title. */
     fun lookupTmdb(tmdbId: String): Pair<Int, String>? {
@@ -233,35 +249,31 @@ class SonarrClient(private val baseUrl: String, private val apiKey: String, priv
         return tvdb to first["title"].str()
     }
 
-    fun rootFolder(): String = runCatching { api("/api/v3/rootfolder").arr().firstOrNull()?.obj()?.get("path").str() }.getOrNull() ?: "/tv"
-    fun qualityProfileId(): Int = runCatching { api("/api/v3/qualityprofile").arr().firstOrNull()?.obj()?.get("id").int() }.getOrNull() ?: 1
-
     /** Add a series. Returns the new Sonarr series id. */
     fun addSeries(tmdbId: String, title: String): Int {
         val (tvdbId, seriesTitle) = lookupTmdb(tmdbId) ?: throw ApiException("Sonarr: no tvdb mapping for tmdb:$tmdbId")
         val body = buildJsonObject {
-            put("tvdbId", kotlinx.serialization.json.JsonPrimitive(tvdbId))
-            put("title", kotlinx.serialization.json.JsonPrimitive(seriesTitle.ifBlank { title }))
-            put("qualityProfileId", kotlinx.serialization.json.JsonPrimitive(qualityProfileId()))
-            put("rootFolderPath", kotlinx.serialization.json.JsonPrimitive(rootFolder()))
-            put("monitored", kotlinx.serialization.json.JsonPrimitive(true))
-            put("seasonFolder", kotlinx.serialization.json.JsonPrimitive(true))
-            put("seriesType", kotlinx.serialization.json.JsonPrimitive("standard"))
+            put("tvdbId", JsonPrimitive(tvdbId))
+            put("title", JsonPrimitive(seriesTitle.ifBlank { title }))
+            put("qualityProfileId", JsonPrimitive(qualityProfileId()))
+            put("rootFolderPath", JsonPrimitive(rootFolder()))
+            put("monitored", JsonPrimitive(true))
+            put("seasonFolder", JsonPrimitive(true))
+            put("seriesType", JsonPrimitive("standard"))
             put("addOptions", buildJsonObject {
-                put("searchForMissingEpisodes", kotlinx.serialization.json.JsonPrimitive(true))
-                put("searchForCutoffUnmetEpisodes", kotlinx.serialization.json.JsonPrimitive(false))
+                put("searchForMissingEpisodes", JsonPrimitive(true))
+                put("searchForCutoffUnmetEpisodes", JsonPrimitive(false))
             })
         }
-        return post("/api/v3/series", json.encodeToString(JsonObject.serializer(), body)).obj()["id"].int()
+        return post("/api/v3/series", jsonX.encodeToString(JsonObject.serializer(), body)).obj()["id"].int()
     }
 
-    /** All series with their library/queue state. */
-    fun seriesStates(): List<Triple<Int, Int, Boolean>> = // (sonarrId, tvdbId, hasFiles)
+    fun seriesStates(): List<SeriesState> =
         runCatching {
             api("/api/v3/series").arr().map { s ->
                 val o = s.obj()
                 val stats = o["statistics"].obj()
-                Triple(o["id"].int(), o["tvdbId"].int(), stats["episodeFileCount"].int(0) > 0)
+                SeriesState(o["id"].int(), o["tvdbId"].int(), stats["episodeFileCount"].int(0) > 0)
             }
         }.getOrElse { emptyList() }
 
@@ -271,48 +283,35 @@ class SonarrClient(private val baseUrl: String, private val apiKey: String, priv
         }.getOrElse { emptySet() }
 }
 
-class RadarrClient(private val baseUrl: String, private val apiKey: String, private val http: HttpTransport = realHttp) {
-    private val headers = mapOf("X-Api-Key" to apiKey)
-    private fun url(path: String, params: String) =
-        "$baseUrl$path" + (if (params.isBlank()) "" else "?$params")
-    private fun api(path: String, params: String = ""): JsonElement =
-        httpGetJsonRetrying(url(path, params), headers, http)
-
-    private fun post(path: String, body: String): JsonElement {
-        val resp = http("POST", url(path, ""), headers + ("Content-Type" to "application/json"), body, true)
-        if (!resp.ok) throw ApiException("Radarr HTTP ${resp.status}: ${resp.body.take(200)}", resp.status)
-        return json.parseToJsonElement(resp.body)
-    }
+class RadarrClient(baseUrl: String, apiKey: String, http: HttpTransport = realHttp) :
+    ArrClient(baseUrl, apiKey, http, "Radarr") {
 
     fun lookupTmdb(tmdbId: String): JsonObject? {
         val el = api("/api/v3/movie/lookup", "term=tmdb:$tmdbId")
         return el.arr().firstOrNull()?.obj()
     }
 
-    fun rootFolder(): String = runCatching { api("/api/v3/rootfolder").arr().firstOrNull()?.obj()?.get("path").str() }.getOrNull() ?: "/movies"
-    fun qualityProfileId(): Int = runCatching { api("/api/v3/qualityprofile").arr().firstOrNull()?.obj()?.get("id").int() }.getOrNull() ?: 1
-
     /** Add a movie. Returns the new Radarr movie id. */
     fun addMovie(tmdbId: String): Int {
+        val tmdb = tmdbId.toIntOrNull() ?: throw ApiException("Radarr: bad tmdb id '$tmdbId'")
         val lookup = lookupTmdb(tmdbId) ?: throw ApiException("Radarr: no mapping for tmdb:$tmdbId")
         val body = buildJsonObject {
-            put("tmdbId", kotlinx.serialization.json.JsonPrimitive(tmdbId.toInt()))
-            put("title", kotlinx.serialization.json.JsonPrimitive(lookup["title"].str()))
-            put("year", kotlinx.serialization.json.JsonPrimitive(lookup["year"].int()))
-            put("qualityProfileId", kotlinx.serialization.json.JsonPrimitive(qualityProfileId()))
-            put("rootFolderPath", kotlinx.serialization.json.JsonPrimitive(rootFolder()))
-            put("monitored", kotlinx.serialization.json.JsonPrimitive(true))
-            put("addOptions", buildJsonObject { put("search", kotlinx.serialization.json.JsonPrimitive(true)) })
+            put("tmdbId", JsonPrimitive(tmdb))
+            put("title", JsonPrimitive(lookup["title"].str()))
+            put("year", JsonPrimitive(lookup["year"].int()))
+            put("qualityProfileId", JsonPrimitive(qualityProfileId()))
+            put("rootFolderPath", JsonPrimitive(rootFolder()))
+            put("monitored", JsonPrimitive(true))
+            put("addOptions", buildJsonObject { put("search", JsonPrimitive(true)) })
         }
-        return post("/api/v3/movie", json.encodeToString(JsonObject.serializer(), body)).obj()["id"].int()
+        return post("/api/v3/movie", jsonX.encodeToString(JsonObject.serializer(), body)).obj()["id"].int()
     }
 
-    /** All movies with library state. */
-    fun movieStates(): List<Triple<Int, String, Boolean>> = // (radarrId, tmdbId, hasFile)
+    fun movieStates(): List<MovieState> =
         runCatching {
             api("/api/v3/movie").arr().map { m ->
                 val o = m.obj()
-                Triple(o["id"].int(), o["tmdbId"].str(), o["hasFile"].str() == "true")
+                MovieState(o["id"].int(), o["tmdbId"].str(), o["hasFile"].str() == "true")
             }
         }.getOrElse { emptyList() }
 
@@ -349,7 +348,7 @@ class JellyfinClient(private val baseUrl: String, private val apiKey: String, pr
         val out = mutableSetOf<String>()
         var start = 0
         val page = 200
-        while (true) {
+        while (start < MAX_LIBRARY_ITEMS) { // bounded: never loop forever on a weird server
             val el = get("/Items", "IncludeItemTypes=$type&Recursive=true&Fields=ProviderIds&StartIndex=$start&Limit=$page")
             val items = el.obj()["Items"].arr()
             if (items.isEmpty()) break
@@ -362,4 +361,6 @@ class JellyfinClient(private val baseUrl: String, private val apiKey: String, pr
         }
         return out
     }
+
+    private companion object { const val MAX_LIBRARY_ITEMS = 5000 }
 }
