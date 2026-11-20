@@ -189,28 +189,37 @@ fun PrimaryButton(ctx: Context, label: String, enabled: Boolean = true, t: Desig
         pressable()
     }
 
-/** Secondary button: glass pill with accent label. */
-fun SecondaryButton(ctx: Context, label: String, t: DesignTokens = AppTheme.current, onClick: () -> Unit): TextView =
-    AppText(ctx, label, TextStyle.TITLE, color = t.colors.accentSolid, bold = true, t = t).apply {
+/** SecondaryButton/DangerButton share [buttonBase]; PrimaryButton keeps its gradient + enabled state. */
+
+/** Shared button base: padding, 48dp minimum target, press feedback. */
+private fun buttonBase(
+    ctx: Context,
+    label: String,
+    style: TextStyle,
+    color: Int,
+    t: DesignTokens,
+    hPadDp: Int,
+    onClick: () -> Unit
+): TextView =
+    AppText(ctx, label, style, color = color, bold = true, t = t).apply {
         gravity = Gravity.CENTER
-        glass(t.radius.button, t = t)
-        val px = ctx.dp(16); val py = ctx.dp(14)
+        val px = ctx.dp(hPadDp); val py = ctx.dp(14)
         setPadding(px, py, px, py)
         minimumHeight = ctx.dp(48)
         setOnClickListener { onClick() }
         pressable()
     }
 
+/** Secondary button: glass pill with accent label. */
+fun SecondaryButton(ctx: Context, label: String, t: DesignTokens = AppTheme.current, onClick: () -> Unit): TextView =
+    buttonBase(ctx, label, TextStyle.TITLE, t.colors.accentText, t, 16, onClick).apply {
+        glass(t.radius.button, t = t)
+    }
+
 /** Danger button: glass pill with error-colored label. */
 fun DangerButton(ctx: Context, label: String, t: DesignTokens = AppTheme.current, onClick: () -> Unit): TextView =
-    AppText(ctx, label, TextStyle.BODY, color = t.colors.error, bold = true, t = t).apply {
-        gravity = Gravity.CENTER
+    buttonBase(ctx, label, TextStyle.BODY, t.colors.error, t, 14, onClick).apply {
         glass(t.radius.button, t = t)
-        val px = ctx.dp(14); val py = ctx.dp(14)
-        setPadding(px, py, px, py)
-        minimumHeight = ctx.dp(48)
-        setOnClickListener { onClick() }
-        pressable()
     }
 
 // ------------------------------------------------------------------ bottom nav
@@ -221,10 +230,12 @@ data class NavItem(val icon: String, val label: String)
  * Bottom navigation atom with an animated active-pill indicator (Material 3
  * style). Exposes [select] to move the pill with a spring.
  */
-class BottomNavBar(private val ctx: Context, val items: List<NavItem>, initial: Int, t: DesignTokens = AppTheme.current, val onSelect: (Int) -> Unit) {
+class BottomNavBar(private val ctx: Context, val items: List<NavItem>, initial: Int, private val t: DesignTokens = AppTheme.current, val onSelect: (Int) -> Unit) {
     val root: LinearLayout = row(ctx) { gravity = Gravity.CENTER }
     private val cells = mutableListOf<FrameLayout>()
     private val pills = mutableListOf<View>()
+    private val icons = mutableListOf<TextView>()
+    private val labels = mutableListOf<TextView>()
     var selected = initial
         private set
     private var initialized = false
@@ -246,21 +257,24 @@ class BottomNavBar(private val ctx: Context, val items: List<NavItem>, initial: 
                 alpha = 0f
                 elevation = ctx.dpF(t.elevation.level1Dp)
             }
-            val label = col(ctx) {
+            val icon = AppText(ctx, item.icon, TextStyle.TITLE, t = t)
+            val label = AppText(ctx, item.label, TextStyle.LABEL, t = t)
+            val labelCol = col(ctx) {
                 gravity = Gravity.CENTER
-                addView(AppText(ctx, item.icon, TextStyle.TITLE, t = t))
-                addView(AppText(ctx, item.label, TextStyle.LABEL, t = t))
+                addView(icon)
+                addView(label)
             }
             val cell = FrameLayout(ctx).apply {
                 val pad = ctx.dp(8)
-                label.setPadding(pad, pad, pad, pad)
+                labelCol.setPadding(pad, pad, pad, pad)
                 addView(pill, FrameLayout.LayoutParams(MATCH, ctx.dp(48), Gravity.CENTER))
-                addView(label, FrameLayout.LayoutParams(WRAP, WRAP, Gravity.CENTER))
+                addView(labelCol, FrameLayout.LayoutParams(WRAP, WRAP, Gravity.CENTER))
                 setOnClickListener { select(i) }
                 pressable()
+                contentDescription = item.label
             }
             root.addView(cell, LinearLayout.LayoutParams(0, WRAP, 1f))
-            cells.add(cell); pills.add(pill)
+            cells.add(cell); pills.add(pill); icons.add(icon); labels.add(label)
         }
         root.post { select(initial, animate = false); initialized = true }
     }
@@ -268,16 +282,13 @@ class BottomNavBar(private val ctx: Context, val items: List<NavItem>, initial: 
     fun select(i: Int, animate: Boolean = true) {
         if (i == selected && initialized) return
         selected = i
-        val m = AppTheme.current.motion
-        cells.forEachIndexed { idx, cell ->
+        val m = t.motion
+        val c = t.colors
+        cells.forEachIndexed { idx, _ ->
             val active = idx == i
             val pill = pills[idx]
-            val label = cell.getChildAt(1) as LinearLayout
-            val icon = label.getChildAt(0) as TextView
-            val text = label.getChildAt(1) as TextView
-            val c = AppTheme.current.colors
-            icon.setTextColor(if (active) c.textOnAccent else c.textSecondary)
-            text.setTextColor(if (active) c.textOnAccent else c.textSecondary)
+            icons[idx].setTextColor(if (active) c.textOnAccent else c.textSecondary)
+            labels[idx].setTextColor(if (active) c.textOnAccent else c.textSecondary)
             if (animate) {
                 pill.animate().scaleX(if (active) 1f else 0f).alpha(if (active) 1f else 0f)
                     .setDuration(if (active) m.mediumMs else m.shortMs)
@@ -330,8 +341,8 @@ class SearchField(ctx: Context, hint: String, t: DesignTokens = AppTheme.current
             val size = ctx.dp(48)
             addView(AppText(ctx, "✕", TextStyle.BODY, color = t.colors.textSecondary, t = t).apply {
                 gravity = Gravity.CENTER
-                contentDescription = "Clear search"
             }, FrameLayout.LayoutParams(size, size, Gravity.CENTER))
+            contentDescription = "Clear search"
             setOnClickListener { input.setText("") }
             pressable()
         }
@@ -346,11 +357,6 @@ class SearchField(ctx: Context, hint: String, t: DesignTokens = AppTheme.current
             }
             override fun afterTextChanged(s: Editable?) {}
         })
-    }
-    /** Replace the text without firing onQuery (used when switching tabs). */
-    fun clearSilently() {
-        pending?.let { handler.removeCallbacks(it) }
-        input.setText("")
     }
 }
 
@@ -373,26 +379,23 @@ fun TextView.restyleChip(color: Int, t: DesignTokens = AppTheme.current) {
     setTextColor(color)
 }
 
-fun statusColorOf(status: RequestStatus?, t: DesignTokens = AppTheme.current): Int = when (status) {
-    RequestStatus.AVAILABLE -> t.colors.success
-    RequestStatus.PENDING -> t.colors.warning
-    RequestStatus.PROCESSING -> t.colors.info
-    null -> t.colors.textSecondary
+fun statusColorOf(status: RequestStatus?, available: Boolean, t: DesignTokens = AppTheme.current): Int = when {
+    available || status == RequestStatus.AVAILABLE -> t.colors.success
+    status == RequestStatus.PENDING -> t.colors.warning
+    status == RequestStatus.PROCESSING -> t.colors.info
+    else -> t.colors.textSecondary
 }
 
-fun statusLabelOf(media: Media, status: RequestStatus?): String? {
-    if (media.available) return "✓ Available"
-    return when (status) {
-        RequestStatus.PENDING -> "⏳ Pending"
-        RequestStatus.PROCESSING -> "⚙ Processing"
-        RequestStatus.AVAILABLE -> "✓ Available"
-        null -> null
-    }
+fun statusLabelOf(media: Media, status: RequestStatus?): String? = when {
+    media.available || status == RequestStatus.AVAILABLE -> "✓ Available"
+    status == RequestStatus.PENDING -> "⏳ Pending"
+    status == RequestStatus.PROCESSING -> "⚙ Processing"
+    else -> null
 }
 
 fun StatusPill(ctx: Context, media: Media, status: RequestStatus?, t: DesignTokens = AppTheme.current): TextView? {
     val label = statusLabelOf(media, status) ?: return null
-    val color = statusColorOf(status, t)
+    val color = statusColorOf(status, media.available, t)
     // tinted background + colored text: passes WCAG contrast on dark and light themes
     return Chip(ctx, label, withAlpha(color, 0.22f), fg = color, t = t)
 }
@@ -417,10 +420,12 @@ class GradientPoster(ctx: Context, val media: Media, t: DesignTokens = AppTheme.
     private val c1 = Color.parseColor(media.color1)
     private val c2 = Color.parseColor(media.color2)
     // pick a text color that keeps WCAG contrast on this gradient
+    // (WCAG relative-luminance threshold for switching text polarity is ~0.183)
     private val textColor: Int = run {
         val avg = ((luminance(c1) + luminance(c2)) / 2.0)
-        if (avg > 0.45) 0xFF101828.toInt() else t.colors.textOnAccent
+        if (avg > 0.183) 0xFF101828.toInt() else t.colors.textOnAccent
     }
+    private val scrimColor: Int = if (textColor == 0xFF101828.toInt()) 0xFFFFFFFF.toInt() else 0xFF000000.toInt()
     private val titlePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
         color = textColor; typeface = android.graphics.Typeface.DEFAULT_BOLD; textAlign = android.graphics.Paint.Align.CENTER
     }
@@ -446,6 +451,15 @@ class GradientPoster(ctx: Context, val media: Media, t: DesignTokens = AppTheme.
         canvas.drawCircle(w * 0.84f, h * 0.14f, w * 0.33f, deco)
         labelPaint.textSize = w * 0.05f
         canvas.drawText(media.type.label.uppercase(), w / 2f, h * 0.12f, labelPaint)
+        // scrim behind the title so text keeps WCAG contrast on any gradient
+        val scrim = android.graphics.Paint().apply {
+            shader = android.graphics.LinearGradient(
+                0f, h * 0.30f, 0f, h * 0.85f,
+                withAlpha(scrimColor, 0.62f), withAlpha(scrimColor, 0f),
+                android.graphics.Shader.TileMode.CLAMP
+            )
+        }
+        canvas.drawRect(0f, h * 0.30f, w, h * 0.85f, scrim)
         val words = media.title.split(" ").filter { it.isNotBlank() }
         val lines = mutableListOf<String>(); var cur = ""
         for (word in words) {
@@ -453,7 +467,7 @@ class GradientPoster(ctx: Context, val media: Media, t: DesignTokens = AppTheme.
             if (cand.length <= 14) cur = cand else { if (cur.isNotEmpty()) lines.add(cur); cur = word }
         }
         if (cur.isNotEmpty()) lines.add(cur)
-        val shown = if (lines.size > 3) lines.take(2) + lines[2].removeSuffix("…") + "…" else lines
+        val shown = if (lines.size > 3) lines.take(2) + lines[2].take(11) + "…" else lines
         val fs = when (shown.size) { 1 -> w * 0.115f; 2 -> w * 0.10f; else -> w * 0.08f }
         titlePaint.textSize = fs
         val lh = fs * 1.15f
@@ -514,9 +528,11 @@ fun PosterCard(ctx: Context, m: Media, status: RequestStatus? = null, t: DesignT
             ellipsize = android.text.TextUtils.TruncateAt.END
         })
         contentDescription = "${m.title}, ${m.year}, ${m.type.label}"
+        var lastClickMs = 0L
         setOnClickListener {
-            if (!isClickable) return@setOnClickListener // double-tap guard
-            isClickable = false
+            val now = System.currentTimeMillis()
+            if (now - lastClickMs < 400) return@setOnClickListener // double-tap guard (re-arms, never dead)
+            lastClickMs = now
             onClick()
         }
         pressable()
@@ -531,7 +547,7 @@ fun SectionHeader(ctx: Context, title: String, actionLabel: String? = null, onAc
         gravity = Gravity.CENTER_VERTICAL
         addView(AppText(ctx, title, TextStyle.TITLE, bold = true, t = t), LinearLayout.LayoutParams(0, WRAP, 1f))
         if (actionLabel != null && onAction != null) {
-            addView(AppText(ctx, actionLabel, TextStyle.LABEL, color = t.colors.accentSolid, bold = true, t = t).apply {
+            addView(AppText(ctx, actionLabel, TextStyle.LABEL, color = t.colors.accentText, bold = true, t = t).apply {
                 setOnClickListener { onAction() }
                 pressable()
             })
@@ -559,10 +575,7 @@ fun Skeleton(ctx: Context, w: Int, hDp: Int, t: DesignTokens = AppTheme.current)
         glass(t.radius.button, t = t)
         layoutParams = ViewGroup.LayoutParams(w, ctx.dp(hDp))
     }
-    val reduceMotion = android.provider.Settings.Global.getFloat(
-        ctx.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f
-    ) == 0f
-    if (reduceMotion) {
+    if (ctx.reduceMotion()) {
         v.alpha = 0.6f
     } else {
         val shimmer = android.animation.ValueAnimator.ofFloat(1f, 0.4f).apply {
@@ -621,6 +634,8 @@ fun SwitchRow(ctx: Context, label: String, checked: Boolean, t: DesignTokens = A
         isChecked = checked
         setTextColor(t.colors.textPrimary)
         setTextSize(TypedValue.COMPLEX_UNIT_SP, t.type.bodySp)
+        minimumHeight = ctx.dp(48) // M3 touch target
+        val py = ctx.dp(12); setPadding(paddingStart, py, paddingEnd, py)
         setOnCheckedChangeListener { _, b -> onChange(b) }
     }
 
@@ -630,9 +645,11 @@ fun ModeBanner(ctx: Context, live: Boolean, t: DesignTokens = AppTheme.current):
     val (text, color) = if (live)
         "🌐 Live — TMDB · Sonarr/Radarr · Prowlarr · Jellyfin" to t.colors.success
     else
-        "🧪 Placeholder mode — tap ⚙ to connect your services" to t.colors.warning
+        "🧪 Placeholder mode — tap to connect your services in Settings" to t.colors.warning
     return Chip(ctx, text, withAlpha(color, 0.18f), color, t).apply {
         gravity = Gravity.START
+        minimumHeight = ctx.dp(48)
+        contentDescription = if (live) "Live mode active. Tap to open settings." else "Placeholder mode. Tap to open settings."
     }
 }
 
