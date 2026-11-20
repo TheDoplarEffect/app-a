@@ -157,6 +157,20 @@ class LiveParsingTest {
     }
 
     @Test
+    fun `magnetFromDownloadUrl rejects non-magnet redirect targets`() {
+        val url = "http://prowlarr/4/download?link=abc"
+        val http = fakeHttp(mapOf("/download" to resp("", status = 301, headers = mapOf("Location" to listOf("https://1337x.to/some-page.html")))))
+        // an HTML redirect is NOT a magnet — fall back to the download url, never the page
+        assertEquals(url, magnetFromDownloadUrl(url, http))
+    }
+
+    @Test
+    fun `magnetFromDownloadUrl accepts torrent redirects`() {
+        val http = fakeHttp(mapOf("/download" to resp("", status = 302, headers = mapOf("Location" to listOf("https://itorrents.org/t/123.torrent")))))
+        assertEquals("https://itorrents.org/t/123.torrent", magnetFromDownloadUrl("http://p/download?link=x", http))
+    }
+
+    @Test
     fun `magnetFromDownloadUrl falls back to url when not a redirect`() {
         val url = "http://prowlarr/4/download?link=abc"
         val http = fakeHttp(mapOf("/download" to resp("binary", status = 200)))
@@ -201,7 +215,7 @@ class LiveParsingTest {
                 "/api/v3/rootfolder" to resp("""[{"path":"/tv"}]"""),
                 "/api/v3/series" to resp("""{"id":42}""")
             ),
-            onRequest = { method, url, body -> if (method == "POST" && url.contains("/api/v3/series?")) postedBody = body }
+            onRequest = { method, url, body -> if (method == "POST" && url.contains("/api/v3/series")) postedBody = body }
         )
         val id = SonarrClient("http://sonarr:8989", "K", http).addSeries("1396", "Breaking Bad")
         assertEquals(42, id)
@@ -271,6 +285,15 @@ class LiveParsingTest {
     fun `config without tmdb is not live ready`() {
         val cfg = AppConfig(sonarrUrl = "http://s", sonarrKey = "k", liveMode = true)
         assertFalse(cfg.liveReady)
+    }
+
+    @Test
+    fun `urls without http scheme are rejected`() {
+        assertFalse(AppConfig(sonarrUrl = "192.168.178.42:8989", sonarrKey = "k").hasSonarr)
+        assertTrue(AppConfig(sonarrUrl = "http://192.168.178.42:8989", sonarrKey = "k").hasSonarr)
+        assertEquals("URL needs http:// or https://", AppConfig().urlError("192.168.178.42:8989"))
+        assertNull(AppConfig().urlError("https://jellyfin.example"))
+        assertNull(AppConfig().urlError(""))
     }
 
     @Test

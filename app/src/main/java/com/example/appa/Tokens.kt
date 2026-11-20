@@ -28,7 +28,8 @@ data class ColorTokens(
     val accentSolid: Int,
     val success: Int, val warning: Int, val error: Int, val info: Int,
     val scrimTop: Int,              // poster scrim gradient (transparent)
-    val scrimBottom: Int            // poster scrim gradient (opaque-ish)
+    val scrimBottom: Int,           // poster scrim gradient (opaque-ish)
+    val chipScrim: Int              // rating-chip background on posters
 )
 
 // ------------------------------------------------------------------ type
@@ -109,12 +110,13 @@ val CrystalGlassDark = DesignTokens(
         error = 0xFFFB7185.toInt(),
         info = 0xFF38BDF8.toInt(),
         scrimTop = 0x00000000,
-        scrimBottom = 0xD9000000.toInt()
+        scrimBottom = 0xD9000000.toInt(),
+        chipScrim = 0xB3000000.toInt()
     ),
     type = TypeTokens(displaySp = 28f, headlineSp = 22f, titleSp = 17f, bodySp = 14f, labelSp = 11f),
     space = SpaceTokens(xs = 4, sm = 8, md = 12, lg = 16, xl = 24, xxl = 32),
     radius = RadiusTokens(poster = 20, card = 24, button = 16, sheet = 32, pill = 999),
-    motion = MotionTokens(instantMs = 80, shortMs = 160, mediumMs = 300, longMs = 520),
+    motion = MotionTokens(instantMs = 80, shortMs = 160, mediumMs = 300, longMs = 500),
     elevation = ElevationTokens(level1Dp = 4f, level2Dp = 12f, level3Dp = 24f, shadowColor = 0x66000000.toInt())
 )
 
@@ -135,12 +137,13 @@ val PorcelainLight = DesignTokens(
         accentStart = 0xFF6366F1.toInt(),
         accentEnd = 0xFF8B5CF6.toInt(),
         accentSolid = 0xFF5B4BD6.toInt(),  // dark enough for white text (WCAG AA)
-        success = 0xFF059669.toInt(),
-        warning = 0xFFD97706.toInt(),
-        error = 0xFFE11D48.toInt(),
-        info = 0xFF0284C7.toInt(),
+        success = 0xFF047857.toInt(),   // darkened for WCAG AA on light bg
+        warning = 0xFFB45309.toInt(),
+        error = 0xFFBE123C.toInt(),
+        info = 0xFF0369A1.toInt(),
         scrimTop = 0x00000000,
-        scrimBottom = 0xD9000000.toInt()
+        scrimBottom = 0xD9000000.toInt(),
+        chipScrim = 0xB3000000.toInt()
     ),
     type = CrystalGlassDark.type,
     space = CrystalGlassDark.space,

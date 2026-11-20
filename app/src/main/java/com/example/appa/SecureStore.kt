@@ -16,6 +16,10 @@ import javax.crypto.spec.GCMParameterSpec
  * services themselves.
  */
 object SecureStore {
+    /** True when the stored config had to be wiped (key permanently invalidated). */
+    @Volatile var wasWiped: Boolean = false
+        private set
+
     private const val PREFS = "appa_secure"
     private const val KEY_ALIAS = "appa_config_key"
     private const val CONFIG_KEY = "config_enc"
@@ -57,6 +61,12 @@ object SecureStore {
     fun loadConfig(context: Context): AppConfig {
         val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val enc = prefs.getString(CONFIG_KEY, null) ?: return AppConfig()
-        return runCatching { AppConfig.fromJson(decrypt(enc)) }.getOrDefault(AppConfig())
+        return runCatching { AppConfig.fromJson(decrypt(enc)) }.getOrElse {
+            // key permanently invalidated (e.g. after backup restore): wipe the
+            // stale ciphertext and flag it instead of silently returning empty
+            wasWiped = true
+            prefs.edit().remove(CONFIG_KEY).apply()
+            AppConfig()
+        }
     }
 }

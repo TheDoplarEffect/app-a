@@ -44,21 +44,25 @@ class LiveRepository(private val cfg: AppConfig, private val http: HttpTransport
     private val radarr by lazy { RadarrClient(cfgN.radarrUrl, cfgN.radarrKey, http) }
     private val jellyfin by lazy { JellyfinClient(cfgN.jellyfinUrl, cfgN.jellyfinKey, http) }
 
-    private var audiobookIndexerIds: String = ""
-    private var cachedMovieTmdbIds: Set<String> = emptySet()
-    private var cachedSeriesTmdbIds: Set<String> = emptySet()
+    // Resolved lazily on first use (NOT in the constructor — AppState builds the
+    // repo on the main thread and a blocking call here is a NetworkOnMainThread ANR).
+    private var audiobookIndexerIds: String? = null
+    @Volatile private var cachedMovieTmdbIds: Set<String> = emptySet()
+    @Volatile private var cachedSeriesTmdbIds: Set<String> = emptySet()
 
-    init {
-        if (cfgN.hasProwlarr) {
-            audiobookIndexerIds = prowlarr.indexerIdByName("audiobook")?.let { it.toString() } ?: ""
-        }
+    private fun audiobookIndexerIds(): String {
+        val cur = audiobookIndexerIds
+        if (cur != null) return cur
+        val resolved = if (cfgN.hasProwlarr) prowlarr.indexerIdByName("audiobook")?.toString() ?: "" else ""
+        audiobookIndexerIds = resolved
+        return resolved
     }
 
     fun pingAll(): Map<String, Boolean> = mapOf(
         "tmdb" to runCatching { tmdb.trending(MediaType.MOVIES).isNotEmpty() }.getOrDefault(false),
-        "prowlarr" to (if (cfgN.hasProwlarr) runCatching { prowlarr.search("test", "").isNotEmpty() || true }.getOrDefault(false) else false),
-        "sonarr" to (if (cfgN.hasSonarr) runCatching { sonarr.seriesStates(); true }.getOrDefault(false) else false),
-        "radarr" to (if (cfgN.hasRadarr) runCatching { radarr.movieStates(); true }.getOrDefault(false) else false),
+        "prowlarr" to (if (cfgN.hasProwlarr) runCatching { prowlarr.search("test", "") }.isSuccess else false),
+        "sonarr" to (if (cfgN.hasSonarr) runCatching { sonarr.seriesStates() }.isSuccess else false),
+        "radarr" to (if (cfgN.hasRadarr) runCatching { radarr.movieStates() }.isSuccess else false),
         "jellyfin" to (if (cfgN.hasJellyfin) jellyfin.ping() else false)
     )
 
@@ -96,7 +100,7 @@ class LiveRepository(private val cfg: AppConfig, private val http: HttpTransport
             MediaType.AUDIOBOOKS -> media.title + (media.author?.let { " $it" } ?: "")
             else -> "${media.title} ${media.year}"
         }
-        val indexerIds = if (media.type == MediaType.AUDIOBOOKS) audiobookIndexerIds else ""
+        val indexerIds = if (media.type == MediaType.AUDIOBOOKS) audiobookIndexerIds() else ""
         val raws = prowlarr.search(query, indexerIds).take(25)
         // NOTE: magnets are resolved lazily (resolveMagnet) — resolving all
         // results up-front would mean one slow indexer redirect per result.
@@ -177,7 +181,7 @@ class LiveRepository(private val cfg: AppConfig, private val http: HttpTransport
 
     // ---------------- helpers ----------------
 
-    private var mediaCache: MutableMap<String, Media> = mutableMapOf()
+    private val mediaCache: MutableMap<String, Media> = java.util.concurrent.ConcurrentHashMap()
 
     fun remember(media: List<Media>) { media.forEach { mediaCache[it.id] = it } }
     fun mediaById(id: String): Media? = mediaCache[id] ?: Catalog.byId[id]

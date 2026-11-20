@@ -36,7 +36,7 @@ class RequestsActivity : Activity() {
             val topBar = AppTopBar(
                 this@RequestsActivity,
                 "Requests",
-                leading = TopBarAction("✕") { finishDropping() }
+                leading = TopBarAction("✕", contentDescription = "Close") { finishDropping() }
             )
             addView(topBar, lp(MATCH, WRAP))
             countLabel = AppText(this@RequestsActivity, "", TextStyle.LABEL, t = t)
@@ -63,7 +63,7 @@ class RequestsActivity : Activity() {
                     AppState.store.tick()
                     Thread {
                         runCatching { AppState.repo?.refreshStatuses(AppState.store) }
-                        handler.post { render() }
+                        handler.post { if (!isFinishing && !isDestroyed) render() }
                     }.start()
                     handler.postDelayed(this, 5000)
                 } else {
@@ -80,30 +80,38 @@ class RequestsActivity : Activity() {
         if (::ticker.isInitialized) handler.removeCallbacks(ticker)
     }
 
+    private var lastSignature = ""
+
     private fun render() {
         val t = AppTheme.current
-        list.removeAllViews()
         val requests = AppState.store.all().sortedByDescending { it.requestedAt }
-        countLabel.text = "${requests.size} total"
-        if (requests.isEmpty()) {
+        val signature = requests.joinToString("|") { "${it.id}:${it.status}:${it.external}" }
+        if (signature == lastSignature) return
+        lastSignature = signature
+        list.removeAllViews()
+        val renderable = requests.mapNotNull { r -> AppState.mediaById(r.mediaId)?.let { m -> r to m } }
+        countLabel.text = "${renderable.size} total"
+        if (renderable.isEmpty()) {
             list.addView(EmptyState(this, "📥", "No requests yet", "Open a title and hit \"＋ Request\".", t))
             return
         }
-        requests.forEachIndexed { i, r ->
-            val media = AppState.mediaById(r.mediaId) ?: return@forEachIndexed
+        renderable.forEachIndexed { i, (r, media) ->
             val card = GlassCard(this, padDp = t.space.md.toInt(), t = t) {
                 val rrow = row(this@RequestsActivity) {
                     gravity = android.view.Gravity.CENTER_VERTICAL
                     if (media.posterUrl != null) {
                         val img = android.widget.ImageView(this@RequestsActivity).apply {
                             scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
-                            roundedClip(12)
+                            roundedClip(t.radius.button)
+                            contentDescription = "${media.title} poster"
                         }
                         addView(img, LinearLayout.LayoutParams(dp(44), dp(64)))
                         ImageLoader.load(media.posterUrl!!, img)
                     } else {
-                        addView(GradientPoster(this@RequestsActivity, media, t).apply { roundedClip(12) },
-                            LinearLayout.LayoutParams(dp(44), dp(64)))
+                        addView(GradientPoster(this@RequestsActivity, media, t).apply {
+                            roundedClip(t.radius.button)
+                            contentDescription = "${media.title} poster"
+                        }, LinearLayout.LayoutParams(dp(44), dp(64)))
                     }
                     val info = col(this@RequestsActivity) {
                         addView(AppText(this@RequestsActivity, media.title, TextStyle.BODY, bold = true, t = t))
@@ -119,14 +127,24 @@ class RequestsActivity : Activity() {
                     StatusPill(this@RequestsActivity, media, r.status, t)?.let { pill ->
                         addView(pill, LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(8) })
                     }
-                    addView(CircleIconButton(this@RequestsActivity, "🗑", 0, t) {
-                        AppState.store.delete(r.id)
-                        Toast.makeText(this@RequestsActivity, "Request removed", Toast.LENGTH_SHORT).show()
-                        render()
+                    addView(CircleIconButton(this@RequestsActivity, "🗑", 0, t, contentDescription = "Remove request for ${media.title}") {
+                        android.app.AlertDialog.Builder(this@RequestsActivity)
+                            .setTitle("Remove request?")
+                            .setMessage("Remove the request for \"${media.title}\"?")
+                            .setPositiveButton("Remove") { _, _ ->
+                                AppState.store.delete(r.id)
+                                lastSignature = ""
+                                Toast.makeText(this@RequestsActivity, "Request removed", Toast.LENGTH_SHORT).show()
+                                render()
+                            }
+                            .setNegativeButton("Keep", null)
+                            .show()
                     }, LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(8) })
                 }
                 addView(rrow, lp(MATCH, WRAP))
             }
+            card.contentDescription = "${media.title}, open details"
+            card.setOnClickListener { openRisingTo(DetailActivity::class.java, "mediaId", r.mediaId) }
             list.addView(card, list.lp(MATCH, WRAP, marginTopDp = if (i == 0) 0 else t.space.sm))
         }
         list.staggerIn(stepMs = 30)

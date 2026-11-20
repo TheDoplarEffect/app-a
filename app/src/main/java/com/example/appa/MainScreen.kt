@@ -11,14 +11,15 @@ import android.widget.ScrollView
 
 /**
  * Main screen (organism). Three tabs live as pages in a [SwipePager] — swipe
- * sideways or tap the bottom nav. Each tab keeps its own results + scroll
- * position (tab caching), browse results are cached for 45s, and the 5s
- * status ticker only re-renders when something actually changed (no flicker).
+ * sideways or tap the bottom nav. Per-tab results are cached (key "tab|query",
+ * 45s TTL, stale shown instantly while refreshing), and the status ticker only
+ * re-renders when a signature actually changed. Network errors show a distinct
+ * error state with Retry — never masquerade as "no results".
  */
 
-fun showMainScreen(activity: Activity) {
+fun showMainScreen(activity: Activity): MainScreen {
     activity.edgeToEdge()
-    MainScreen(activity).attach()
+    return MainScreen(activity).also { it.attach() }
 }
 
 class MainScreen(private val activity: Activity) {
@@ -28,11 +29,8 @@ class MainScreen(private val activity: Activity) {
     private var currentTab = MediaType.MOVIES
     private var query = ""
     private val pages = mutableMapOf<MediaType, Page>()
-    private val itemsByTab = mutableMapOf<MediaType, List<Media>>()
-    private val loadedAt = mutableMapOf<MediaType, Long>()
-    private val searchCache = mutableMapOf<String, Pair<Long, List<Media>>>()
-    private val signatureByTab = mutableMapOf<MediaType, String>()
-    private var searchSignature = ""
+    private val cache = mutableMapOf<String, Pair<Long, List<Media>>>()   // key "tab|query" -> (fetchedAt, items)
+    private val signatures = mutableMapOf<String, String>()               // key -> grid signature
 
     private lateinit var search: SearchField
     private lateinit var pager: SwipePager
@@ -40,14 +38,17 @@ class MainScreen(private val activity: Activity) {
     private lateinit var topBar: LinearLayout
     private val handler = Handler(Looper.getMainLooper())
     private var loadJob = 0
+    private var attached = true
 
     private val ticker = object : Runnable {
         override fun run() {
+            if (!attached) return
             if (AppState.liveMode) {
                 AppState.store.tick()
                 Thread {
                     val changed = runCatching { AppState.repo?.refreshStatuses(AppState.store) ?: emptyList() }.getOrElse { emptyList() }
                     handler.post {
+                        if (!attached) return@post
                         if (changed.isNotEmpty()) renderCurrent(animate = false)
                         renderRequestsBadge()
                     }
@@ -73,12 +74,16 @@ class MainScreen(private val activity: Activity) {
                 "MediaSeer",
                 subtitle = if (AppState.liveMode) "Live" else "Placeholder",
                 actions = listOf(
-                    TopBarAction("📥", badge = AppState.store.count()) { activity.openRisingTo(RequestsActivity::class.java) },
-                    TopBarAction("⚙") { activity.openRisingTo(SettingsActivity::class.java) }
+                    TopBarAction("📥", badge = AppState.store.count(), contentDescription = "Requests") { activity.openRisingTo(RequestsActivity::class.java) },
+                    TopBarAction("⚙", contentDescription = "Settings") { activity.openRisingTo(SettingsActivity::class.java) }
                 )
             )
             addView(topBar, lp(MATCH, WRAP, marginTopDp = t.space.xs))
-            addView(ModeBanner(activity, AppState.liveMode, t), lp(WRAP, WRAP, marginTopDp = t.space.sm))
+
+            val banner = ModeBanner(activity, AppState.liveMode, t)
+            banner.setOnClickListener { activity.openRisingTo(SettingsActivity::class.java) }
+            banner.pressable()
+            addView(banner, lp(WRAP, WRAP, marginTopDp = t.space.sm))
 
             search = SearchField(activity, if (AppState.liveMode) "Search TMDB / Open Library…" else "Search titles, genres, authors…", t) { q ->
                 query = q
@@ -86,7 +91,6 @@ class MainScreen(private val activity: Activity) {
             }
             addView(search.root, lp(MATCH, WRAP, marginTopDp = t.space.md))
 
-            // swipeable pages, one per tab
             pager = SwipePager(activity)
             pager.pageCount = MediaType.entries.size
             MediaType.entries.forEach { type ->
@@ -97,6 +101,7 @@ class MainScreen(private val activity: Activity) {
             pager.onPageSelected = { i ->
                 currentTab = MediaType.entries[i]
                 nav.select(i)
+                pages[currentTab]?.scroll?.smoothScrollTo(0, 0)
                 loadItems()
             }
             addView(pager, lp(MATCH, 0, weight = 1f, marginTopDp = t.space.md))
@@ -123,14 +128,22 @@ class MainScreen(private val activity: Activity) {
         handler.postDelayed(ticker, 1000)
     }
 
+    /** Called from MainActivity.onDestroy — stops the ticker and pending loads. */
+    fun detach() {
+        attached = false
+        handler.removeCallbacks(ticker)
+    }
+
+    private fun cacheKey(tab: MediaType, q: String) = "$tab|$q"
+
     private fun buildPage(type: MediaType, t: DesignTokens): Page {
-        val skeleton = GridLayout(activity).apply { columnCount = 3; useDefaultMargins = true }
+        val skeleton = GridLayout(activity).apply { columnCount = GRID_COLUMNS; useDefaultMargins = true }
         repeat(9) {
             skeleton.addView(Skeleton(activity, 0, 150, t).apply {
                 layoutParams = GridLayout.LayoutParams().apply { width = 0; columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f) }
             })
         }
-        val grid = GridLayout(activity).apply { columnCount = 3; useDefaultMargins = true }
+        val grid = GridLayout(activity).apply { columnCount = GRID_COLUMNS; useDefaultMargins = true }
         val scroll = ScrollView(activity).apply { addView(grid) }
         val empty = EmptyState(activity, "🔍", "Nothing here", "No titles match your search.", t)
         val root = FrameLayout(activity)
@@ -155,80 +168,97 @@ class MainScreen(private val activity: Activity) {
         val q = query
         val tab = currentTab
         val p = pages[tab] ?: return
+        val key = cacheKey(tab, q)
         val now = System.currentTimeMillis()
 
         if (!live) {
-            itemsByTab[tab] = if (q.isBlank()) AppState.catalog.ofType(tab) else AppState.catalog.search(q)
+            val all = if (q.isBlank()) Catalog.ofType(tab) else Catalog.search(q)
+            cache[key] = now to all.filter { q.isBlank() || it.type == tab }
             renderCurrent(animate = true)
             return
         }
 
-        // cache: fresh browse results (<45s) render instantly, then refresh quietly
-        if (q.isBlank()) {
-            val cached = itemsByTab[tab]
-            val fresh = loadedAt[tab]?.let { now - it < 45_000 } == true
-            if (cached != null && fresh) {
-                renderCurrent(animate = false)
-            } else if (cached != null) {
-                renderCurrent(animate = false) // show stale instantly
-                showLoading(p, loading = true, hasItems = true)
-            } else {
-                showLoading(p, loading = true, hasItems = false)
-            }
-            Thread {
-                val result = runCatching { AppState.repo!!.browse(tab) }.getOrElse { emptyList() }
-                handler.post {
-                    if (myJob != loadJob) return@post
-                    AppState.repo?.remember(result)
-                    itemsByTab[tab] = result
-                    loadedAt[tab] = now
-                    if (tab == currentTab) renderCurrent(animate = false)
-                }
-            }.start()
+        val cached = cache[key]
+        if (cached != null) {
+            renderCurrent(animate = false) // stale-while-revalidate: show instantly
+            if (now - cached.first < CACHE_TTL_MS) return // still fresh, no fetch
+            showLoading(p, loading = true, hasItems = true)
         } else {
-            val key = q
-            val cached = searchCache[key]
-            if (cached != null && now - cached.first < 45_000) {
-                itemsByTab[tab] = cached.second
-                renderCurrent(animate = false)
-                return
-            }
-            if (cached != null) {
-                itemsByTab[tab] = cached.second
-                renderCurrent(animate = false)
-            } else {
-                showLoading(p, loading = true, hasItems = false)
-            }
-            Thread {
-                val result = runCatching { AppState.repo!!.search(key) }.getOrElse { emptyList() }
-                handler.post {
-                    if (myJob != loadJob) return@post
-                    AppState.repo?.remember(result)
-                    searchCache[key] = now to result
-                    itemsByTab[tab] = result
-                    if (tab == currentTab) renderCurrent(animate = false)
-                }
-            }.start()
+            showLoading(p, loading = true, hasItems = false)
         }
+        Thread {
+            val repo = AppState.repo
+            // live search merges all types — scope to the current tab
+            val result = if (repo == null) {
+                Result.failure(ApiException("Live mode off"))
+            } else runCatching {
+                val raw = if (q.isBlank()) repo.browse(tab) else repo.search(q)
+                raw.filter { it.type == tab }
+            }
+            handler.post {
+                if (myJob != loadJob || !attached) return@post
+                val items = result.getOrElse { null }
+                if (items == null) {
+                    showError(p, result.exceptionOrNull())
+                    return@post
+                }
+                AppState.repo?.remember(items)
+                cache[key] = System.currentTimeMillis() to items
+                renderCurrent(animate = false)
+            }
+        }.start()
+    }
+
+    private fun showError(p: Page, error: Throwable?) {
+        p.grid.removeAllViews()
+        p.skeleton.visibility = View.GONE
+        p.scroll.visibility = View.GONE
+        val t = AppTheme.current
+        val errView = col(activity) {
+            gravity = android.view.Gravity.CENTER
+            val pad = activity.dp(t.space.xl); setPadding(pad, pad, pad, pad)
+            addView(AppText(activity, "😕", TextStyle.DISPLAY, t = t).apply { gravity = android.view.Gravity.CENTER })
+            addView(AppText(activity, "Couldn't load titles", TextStyle.TITLE, bold = true, t = t).apply {
+                gravity = android.view.Gravity.CENTER
+                layoutParams = LinearLayout.LayoutParams(WRAP, WRAP).apply { topMargin = activity.dp(8) }
+            })
+            addView(AppText(
+                activity,
+                (error?.message ?: "Network error").take(120) +
+                    if (AppState.liveMode) "\nCheck the service URLs in ⚙ Settings." else "",
+                TextStyle.BODY, color = t.colors.textSecondary, t = t
+            ).apply {
+                gravity = android.view.Gravity.CENTER
+                layoutParams = LinearLayout.LayoutParams(WRAP, WRAP).apply { topMargin = activity.dp(4) }
+            })
+            addView(PrimaryButton(activity, "Retry", t = t) { loadItems() }, LinearLayout.LayoutParams(WRAP, WRAP).apply {
+                topMargin = activity.dp(16)
+                gravity = android.view.Gravity.CENTER
+            })
+        }
+        p.empty.visibility = View.GONE
+        p.root.removeView(p.empty)
+        p.root.addView(errView, FrameLayout.LayoutParams(MATCH, MATCH))
+        errView.tag = "error"
     }
 
     private fun renderCurrent(animate: Boolean) {
         val tab = currentTab
         val p = pages[tab] ?: return
-        val items = itemsByTab[tab] ?: emptyList()
-        // diff-based: only touch the grid when something actually changed
-        val signature = if (query.isBlank()) {
-            items.joinToString("|") { "${it.id}:${it.available}:${AppState.requestFor(it.id)?.status ?: "-"}" }
-        } else {
-            items.joinToString("|") { "${it.id}:${it.available}" }
-        }
-        val lastSig = if (query.isBlank()) signatureByTab[tab] else searchSignature
-        if (signature == lastSig && !animate) return
-        if (query.isBlank()) signatureByTab[tab] = signature else searchSignature = signature
+        val key = cacheKey(tab, query)
+        val items = cache[key]?.second ?: emptyList()
+        val signature = items.joinToString("|") { "${it.id}:${it.available}:${AppState.requestFor(it.id)?.status ?: "-"}" }
+        if (signature == signatures[key] && !animate) return
+        signatures[key] = signature
+
+        // remove a previous error view if present
+        p.root.findViewWithTag<View>("error")?.let { p.root.removeView(it); p.root.addView(p.empty, FrameLayout.LayoutParams(MATCH, MATCH)) }
 
         p.grid.removeAllViews()
         items.forEach { m ->
-            p.grid.addView(PosterCard(activity, m, t = AppTheme.current) { activity.openRisingTo(DetailActivity::class.java, "mediaId", m.id) })
+            p.grid.addView(PosterCard(activity, m, status = AppState.requestFor(m.id)?.status, t = AppTheme.current) {
+                activity.openRisingTo(DetailActivity::class.java, "mediaId", m.id)
+            })
         }
         showLoading(p, loading = false, hasItems = items.isNotEmpty())
         if (animate) p.grid.staggerIn() else p.grid.fadeIn(durationMs = AppTheme.current.motion.shortMs)
@@ -236,5 +266,10 @@ class MainScreen(private val activity: Activity) {
 
     private fun renderRequestsBadge() {
         topBar.findViewWithTag<FrameLayout>("top_action_📥")?.setBadge(AppState.store.count())
+    }
+
+    private companion object {
+        const val GRID_COLUMNS = 3
+        const val CACHE_TTL_MS = 45_000L
     }
 }

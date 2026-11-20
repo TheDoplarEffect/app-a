@@ -113,6 +113,16 @@ class DesignTokensTest {
     }
 
     @Test
+    fun `status colors used as chip text pass WCAG AA on the theme background`() {
+        for (t in themes) {
+            for (c in listOf(t.colors.success, t.colors.warning, t.colors.error, t.colors.info)) {
+                val r = contrastRatio(c, t.colors.background)
+                assertTrue("${t.name} status color contrast $r < 4.5", r >= 4.5)
+            }
+        }
+    }
+
+    @Test
     fun `aurora blobs are distinct hues per theme`() {
         for (t in themes) {
             val set = setOf(t.colors.aurora1, t.colors.aurora2, t.colors.aurora3)

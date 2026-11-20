@@ -20,10 +20,10 @@ import android.view.animation.PathInterpolator
  * (decelerate), exits accelerate, emphasis uses a gentle overshoot.
  */
 
-val FastOutSlowIn = PathInterpolator(0.4f, 0f, 0.2f, 1f)   // standard enter
-val LinearOutSlowIn = PathInterpolator(0f, 0f, 0.2f, 1f)    // emphasized enter
-val FastOutLinearIn = PathInterpolator(0.4f, 0f, 1f, 1f)    // exit
-val EmphasizedOvershoot = OvershootInterpolator(1.6f)       // pop
+// Material 3 motion curves: standard (0.2,0,0,1) for enters, emphasized (0.05,0.7,0.1,1) for large surfaces
+val FastOutSlowIn = PathInterpolator(0.2f, 0f, 0f, 1f)
+val EmphasizedPath = PathInterpolator(0.05f, 0.7f, 0.1f, 1f)
+val EmphasizedOvershoot = OvershootInterpolator(1.4f)       // pill pop
 
 private fun View.motion() = AppTheme.current.motion
 
@@ -96,16 +96,6 @@ fun View.withPressScale(): View {
         false // don't consume; click still fires
     }
     return this
-}
-
-/** Crossfade out an old view and in a new one (tab switches, refreshes). */
-fun crossfadeOut(view: View, then: () -> Unit = {}) {
-    view.animate().alpha(0f).setDuration(view.motion().shortMs).setInterpolator(FastOutLinearIn)
-        .withEndAction {
-            view.visibility = View.GONE
-            view.alpha = 1f
-            then()
-        }.start()
 }
 
 // ------------------------------------------------------- activity transitions

@@ -4,6 +4,7 @@ import android.app.Activity
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.View
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -32,7 +33,7 @@ class SettingsActivity : Activity() {
             padSystemBars(top = true, bottom = true, start = true, end = true, extraTopDp = t.space.sm, extraBottomDp = t.space.sm)
             val px = dp(t.space.lg); setPadding(px, paddingTop, px, paddingBottom)
 
-            addView(AppTopBar(this@SettingsActivity, "Settings", leading = TopBarAction("✕") { finishDropping() }), lp(MATCH, WRAP))
+            addView(AppTopBar(this@SettingsActivity, "Settings", leading = TopBarAction("✕", contentDescription = "Close") { finishDropping() }), lp(MATCH, WRAP))
             addView(AppText(
                 this@SettingsActivity,
                 "Secrets are stored encrypted on this device only (Android Keystore) — never in git. " +
@@ -49,8 +50,19 @@ class SettingsActivity : Activity() {
             val cfg = AppState.config
             fun field(label: String, key: String, value: String, hint: String = "", secret: Boolean = false) {
                 val (lab, et) = FormField(this@SettingsActivity, label, value, hint, secret, t)
+                val err = AppText(this@SettingsActivity, "", TextStyle.LABEL, color = t.colors.error, t = t).apply { visibility = View.GONE }
                 form.addView(lab, lp(MATCH, WRAP, marginTopDp = t.space.md))
                 form.addView(et, lp(MATCH, WRAP, marginTopDp = t.space.xs))
+                form.addView(err, lp(MATCH, WRAP, marginTopDp = 2))
+                et.addTextChangedListener(object : android.text.TextWatcher {
+                    override fun beforeTextChanged(a: CharSequence?, b: Int, c: Int, d: Int) {}
+                    override fun onTextChanged(a: CharSequence?, b: Int, c: Int, d: Int) {
+                        val e = AppConfig().urlError(et.text.toString().trim().trimEnd('/'))
+                        err.text = e ?: ""
+                        err.visibility = if (e == null) View.GONE else View.VISIBLE
+                    }
+                    override fun afterTextChanged(a: android.text.Editable?) {}
+                })
                 fields[key] = et
             }
 
@@ -67,7 +79,11 @@ class SettingsActivity : Activity() {
             form.addView(SwitchRow(this@SettingsActivity, "Use live services (otherwise placeholder mode)", cfg.liveMode) { liveChecked = it },
                 lp(MATCH, WRAP, marginTopDp = t.space.lg))
 
-            testResults = row(this@SettingsActivity) { gravity = android.view.Gravity.CENTER_VERTICAL }
+            if (AppState.configWasWiped) {
+                form.addView(AppText(this@SettingsActivity, "⚠ Stored config was reset (device key changed) — please re-enter your keys.", TextStyle.BODY, color = t.colors.warning, t = t),
+                    lp(MATCH, WRAP, marginTopDp = t.space.md))
+            }
+            testResults = col(this@SettingsActivity)
             form.addView(testResults, lp(MATCH, WRAP, marginTopDp = t.space.md))
 
             val btnRow = row(this@SettingsActivity) { gravity = android.view.Gravity.CENTER_VERTICAL }
@@ -108,16 +124,20 @@ class SettingsActivity : Activity() {
             return
         }
         testResults.removeAllViews()
-        testResults.addView(AppText(this, "Testing…", TextStyle.LABEL, t = t))
+        val names = listOf("tmdb", "prowlarr", "sonarr", "radarr", "jellyfin")
+        val chips = names.associateWith { name ->
+            Chip(this, "$name …", t.colors.surfaceGlassStrong, fg = t.colors.textSecondary, t = t).also {
+                testResults.addView(it, LinearLayout.LayoutParams(WRAP, WRAP).apply { marginEnd = dp(6); topMargin = dp(4) })
+            }
+        }
         Thread {
             val results = LiveRepository(cfg).pingAll()
             Handler(Looper.getMainLooper()).post {
-                testResults.removeAllViews()
-                results.forEach { (name, ok) ->
-                    testResults.addView(
-                        Chip(this, "$name ${if (ok) "✓" else "✗"}", if (ok) t.colors.success else t.colors.error, t = t),
-                        LinearLayout.LayoutParams(WRAP, WRAP).apply { marginEnd = dp(6) }
-                    )
+                names.forEach { name ->
+                    val ok = results[name] == true
+                    val c = chips[name]!!
+                    c.text = "$name ${if (ok) "✓" else "✗"}"
+                    c.restyleChip(if (ok) t.colors.success else t.colors.error, t)
                 }
             }
         }.start()
