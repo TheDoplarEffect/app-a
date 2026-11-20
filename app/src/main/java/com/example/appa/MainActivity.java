@@ -1,16 +1,12 @@
 package com.example.appa;
+
 import android.app.Activity;
-import android.graphics.Color;
 import android.os.Bundle;
-import android.widget.TextView;
+
+/** Entry point. All UI/logic lives in Kotlin (see MainScreen.kt). */
 public class MainActivity extends Activity {
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
-        TextView tv = new TextView(this);
-        tv.setText("Hello from app-a");
-        tv.setTextSize(28);
-        tv.setTextColor(Color.BLACK);
-        tv.setBackgroundColor(Color.WHITE);
-        setContentView(tv);
+        MainScreenKt.showMainScreen(this);
     }
 }

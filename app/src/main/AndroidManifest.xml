@@ -1,4 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <uses-permission android:name="android.permission.INTERNET"/>
   <application android:label="app-a" android:allowBackup="true" android:theme="@style/Theme.AppA">
     <activity android:name=".MainActivity" android:exported="true">
       <intent-filter>
@@ -6,5 +7,7 @@
         <category android:name="android.intent.category.LAUNCHER"/>
       </intent-filter>
     </activity>
+    <activity android:name=".DetailActivity" android:exported="false"/>
+    <activity android:name=".RequestsActivity" android:exported="false"/>
   </application>
 </manifest>
