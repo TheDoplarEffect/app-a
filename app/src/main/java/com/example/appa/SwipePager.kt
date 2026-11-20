@@ -28,8 +28,6 @@ class SwipePager(ctx: Context) : ViewGroup(ctx) {
         private set
     var onPageSelected: ((Int) -> Unit)? = null
 
-    fun setPageCount(n: Int) { pageCount = n }
-
     fun pageView(i: Int): View? = if (i in 0 until childCount) getChildAt(i) else null
 
     /** Programmatically go to a page (used by the bottom nav). */

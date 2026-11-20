@@ -88,7 +88,7 @@ class MainScreen(private val activity: Activity) {
 
             // swipeable pages, one per tab
             pager = SwipePager(activity)
-            pager.setPageCount(MediaType.entries.size)
+            pager.pageCount = MediaType.entries.size
             MediaType.entries.forEach { type ->
                 val page = buildPage(type, t)
                 pages[type] = page
