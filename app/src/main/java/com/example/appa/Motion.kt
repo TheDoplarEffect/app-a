@@ -3,6 +3,7 @@ package com.example.appa
 import android.animation.AnimatorSet
 import android.animation.ObjectAnimator
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.view.MotionEvent
 import android.view.View
@@ -11,6 +12,12 @@ import android.view.animation.AccelerateInterpolator
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.OvershootInterpolator
 import android.view.animation.PathInterpolator
+
+/** True when the system animator scale is 0 (user requested reduced motion). Single source of truth. */
+fun Context.reduceMotion(): Boolean =
+    android.provider.Settings.Global.getFloat(
+        contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f
+    ) == 0f
 
 /**
  * Motion system. All durations come from [MotionTokens] (via AppTheme), all

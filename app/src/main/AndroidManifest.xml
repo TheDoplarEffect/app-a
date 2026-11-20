@@ -2,8 +2,9 @@
   <uses-permission android:name="android.permission.INTERNET"/>
   <!-- LAN services (*arr, Prowlarr) are plain HTTP on 192.168.x — allowed per-host via networkSecurityConfig -->
   <application android:label="app-a" android:allowBackup="true" android:theme="@style/Theme.AppA"
-      android:networkSecurityConfig="@xml/network_security_config">
-    <activity android:name=".MainActivity" android:exported="true">
+      android:networkSecurityConfig="@xml/network_security_config"
+      android:enableOnBackInvokedCallback="true">
+    <activity android:name=".MainActivity" android:exported="true" android:windowSoftInputMode="adjustResize">
       <intent-filter>
         <action android:name="android.intent.action.MAIN"/>
         <category android:name="android.intent.category.LAUNCHER"/>

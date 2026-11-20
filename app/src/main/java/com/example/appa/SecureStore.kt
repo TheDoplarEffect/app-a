@@ -56,6 +56,7 @@ object SecureStore {
     fun saveConfig(context: Context, cfg: AppConfig) {
         val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         prefs.edit().putString(CONFIG_KEY, encrypt(cfg.normalized().toJson())).apply()
+        wasWiped = false // an explicit save clears the wiped flag
     }
 
     fun loadConfig(context: Context): AppConfig {

@@ -30,7 +30,14 @@ object ImageLoader {
         executor.execute {
             val bmp = runCatching {
                 val resp = realHttp("GET", url, emptyMap(), null, true)
-                if (resp.ok) BitmapFactory.decodeByteArray(resp.bytes, 0, resp.bytes.size) else null
+                if (!resp.ok || resp.bytes.size > MAX_IMAGE_BYTES) return@runCatching null
+                // downsample large images instead of decoding full-resolution bitmaps (OOM guard)
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(resp.bytes, 0, resp.bytes.size, bounds)
+                val opts = BitmapFactory.Options().apply {
+                    inSampleSize = calculateSampleSize(bounds.outWidth, bounds.outHeight, MAX_DECODE_PX)
+                }
+                BitmapFactory.decodeByteArray(resp.bytes, 0, resp.bytes.size, opts)
             }.getOrNull()
             if (bmp != null) cache.put(url, bmp)
             main.post {
@@ -44,5 +51,16 @@ object ImageLoader {
                 }
             }
         }
+    }
+
+    /** Cap download size (bytes) and decoded pixels to bound memory. */
+    private const val MAX_IMAGE_BYTES = 8 * 1024 * 1024
+    private const val MAX_DECODE_PX = 1600
+
+    private fun calculateSampleSize(w: Int, h: Int, maxPx: Int): Int {
+        if (w <= 0 || h <= 0) return 1
+        var sample = 1
+        while (w / sample > maxPx || h / sample > maxPx) sample *= 2
+        return sample
     }
 }

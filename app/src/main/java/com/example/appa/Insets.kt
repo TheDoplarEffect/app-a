@@ -13,10 +13,11 @@ import android.view.WindowInsetsController
  * what keeps the top-bar icons clear of the status bar and pinhole.
  */
 
-/** Make the window edge-to-edge: transparent bars, light icons (dark theme). */
+/** Make the window edge-to-edge: transparent bars, theme window background, adaptive icon tint. */
 fun Activity.edgeToEdge() {
     window.statusBarColor = Color.TRANSPARENT
     window.navigationBarColor = Color.TRANSPARENT
+    window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(AppTheme.current.colors.background))
     window.insetsController?.apply {
         systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         // light icons when the theme background is dark (derived, not hard-coded)
