@@ -45,7 +45,7 @@ jobs:
         if: always()
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
-          draft: ${{ job.status != 'success' }}
+          draft: false # always publish so build-ci.log is publicly readable even on failure
           files: |
             app/build/outputs/apk/release/*.apk
             build-ci.log
