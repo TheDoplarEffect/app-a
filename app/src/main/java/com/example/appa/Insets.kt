@@ -19,8 +19,12 @@ fun Activity.edgeToEdge() {
     window.navigationBarColor = Color.TRANSPARENT
     window.insetsController?.apply {
         systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        // dark theme: light icons off -> white icons
-        setSystemBarsAppearance(0, WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS)
+        // light icons when the theme background is dark (derived, not hard-coded)
+        val lightIcons = luminance(AppTheme.current.colors.background) >= 0.5
+        setSystemBarsAppearance(
+            if (lightIcons) WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS else 0,
+            WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+        )
     }
 }
 

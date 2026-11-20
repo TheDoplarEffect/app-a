@@ -1,6 +1,7 @@
 package com.example.appa
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -13,18 +14,24 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.TextView
 import android.widget.Toast
 
 /**
- * Detail screen (organism): hero poster with scrim + title overlay, glass
- * cards for meta/overview, request action, and a live magnet list whose
- * magnets resolve lazily on "Copy magnet". Rises in with a sheet transition.
+ * Detail screen (organism). Hero poster + glass meta card + request action +
+ * live magnet list. All updates are IN-PLACE (no recreate(): that re-fired the
+ * network and replayed animations). Magnets resolve lazily on "Copy magnet";
+ * only validated magnet:/torrent links are ever copied — never the
+ * apikey-bearing download URL.
  */
 class DetailActivity : Activity() {
 
-    private lateinit var magnetsHeader: android.widget.TextView
+    private lateinit var magnetsHeader: TextView
     private lateinit var magnetsBox: LinearLayout
+    private lateinit var metaInner: LinearLayout
+    private lateinit var actionsRow: LinearLayout
     private val handler = Handler(Looper.getMainLooper())
+    private var detailsRequested = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -32,14 +39,14 @@ class DetailActivity : Activity() {
         AppState.init(this)
         val t = AppTheme.current
         val mediaId = intent.getStringExtra("mediaId") ?: run { finishDropping(); return }
-        var media = AppState.mediaById(mediaId) ?: run { finishDropping(); return }
+        val media = AppState.mediaById(mediaId) ?: run { finishDropping(); return }
 
         val root = FrameLayout(this).withAurora()
         val body = col(this) {
             padSystemBars(top = true, bottom = true, start = true, end = true, extraTopDp = t.space.sm, extraBottomDp = t.space.sm)
-            val px = this@DetailActivity.dp(t.space.lg); setPadding(px, paddingTop, px, paddingBottom)
+            val px = dp(t.space.lg); setPadding(px, paddingTop, px, paddingBottom)
 
-            addView(AppTopBar(this@DetailActivity, "Details", leading = TopBarAction("✕") { finishDropping() }), lp(MATCH, WRAP))
+            addView(AppTopBar(this@DetailActivity, "Details", leading = TopBarAction("✕", contentDescription = "Close") { finishDropping() }), lp(MATCH, WRAP))
 
             val scroll = ScrollView(this@DetailActivity)
             val content = col(this@DetailActivity)
@@ -49,24 +56,22 @@ class DetailActivity : Activity() {
             // ---------- hero ----------
             val hero = FrameLayout(this@DetailActivity).apply {
                 glass(t.radius.sheet, strong = true, t = t)
-                clipToOutline = true
-                outlineProvider = object : android.view.ViewOutlineProvider() {
-                    override fun getOutline(view: View, outline: android.graphics.Outline) {
-                        outline.setRoundRect(0, 0, view.width, view.height, this@DetailActivity.dp(t.radius.sheet).toFloat())
-                    }
-                }
+                roundedClip(t.radius.sheet)
             }
             val heroH = dp(300)
             if (media.posterUrl != null) {
                 val img = ImageView(this@DetailActivity).apply {
                     scaleType = ImageView.ScaleType.CENTER_CROP
                     roundedClip(t.radius.sheet)
+                    contentDescription = "${media.title} poster"
                 }
                 hero.addView(img, FrameLayout.LayoutParams(MATCH, heroH))
                 ImageLoader.load(media.posterUrl!!, img)
             } else {
-                hero.addView(GradientPoster(this@DetailActivity, media, t).apply { roundedClip(t.radius.sheet) },
-                    FrameLayout.LayoutParams(MATCH, heroH))
+                hero.addView(GradientPoster(this@DetailActivity, media, t).apply {
+                    roundedClip(t.radius.sheet)
+                    contentDescription = "${media.title} poster"
+                }, FrameLayout.LayoutParams(MATCH, heroH))
             }
             hero.addView(View(this@DetailActivity).apply { background = posterScrim(140, t) },
                 FrameLayout.LayoutParams(MATCH, dp(140), Gravity.BOTTOM))
@@ -76,8 +81,8 @@ class DetailActivity : Activity() {
                 addView(AppText(this@DetailActivity, media.title, TextStyle.DISPLAY, t = t))
                 addView(row(this@DetailActivity) {
                     gravity = Gravity.CENTER_VERTICAL
-                    addView(Chip(this@DetailActivity, "★ %.1f".format(media.rating), 0xB3000000.toInt(), t = t))
-                    addView(Chip(this@DetailActivity, "${media.year} · ${media.type.label}", 0xB3000000.toInt(), t = t),
+                    addView(Chip(this@DetailActivity, "★ %.1f".format(media.rating), t.colors.chipScrim, fg = 0xFFFFFFFF.toInt(), t = t))
+                    addView(Chip(this@DetailActivity, "${media.year} · ${media.type.label}", t.colors.chipScrim, fg = 0xFFFFFFFF.toInt(), t = t),
                         LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(6) })
                 }, lp(MATCH, WRAP, marginTopDp = t.space.sm))
             }
@@ -85,64 +90,29 @@ class DetailActivity : Activity() {
             content.addView(hero, lp(MATCH, WRAP))
             hero.popIn()
 
-            // live: fetch full details once in the background, then rebuild ONCE
-            // (guard prevents the old recreate-loop that made the poster flicker
-            // and killed the magnet search)
-            val needsDetails = AppState.liveMode && media.type != MediaType.AUDIOBOOKS &&
-                media.genres.isEmpty() && media.overview.isBlank()
-            if (needsDetails) {
+            // live: fetch full details ONCE in the background, then update the meta card in place
+            if (AppState.liveMode && media.type != MediaType.AUDIOBOOKS) {
+                detailsRequested = true
                 Thread {
-                    val d = runCatching { AppState.repo!!.details(media) }.getOrDefault(media)
+                    val d = runCatching { AppState.repo?.details(media) ?: media }.getOrDefault(media)
                     handler.post {
                         AppState.repo?.remember(listOf(d))
-                        if (d.id == mediaId && d != media && !isFinishing) recreate()
+                        if (d.id == mediaId && !isFinishing && !isDestroyed) renderMeta(d, t)
                     }
                 }.start()
             }
-            media = AppState.mediaById(mediaId) ?: media
 
-            // ---------- meta card ----------
-            val metaCard = GlassCard(this@DetailActivity, padDp = t.space.lg.toInt(), t = t) {
-                val chips = mutableListOf<String>()
-                if (media.genres.isNotEmpty()) chips += media.genres
-                if (media.type == MediaType.SERIES && media.seasons != null) chips += "${media.seasons} seasons · ${media.episodes} eps"
-                if (media.type == MediaType.MOVIES && media.runtimeMinutes != null) chips += "${media.runtimeMinutes} min"
-                if (media.type == MediaType.AUDIOBOOKS) {
-                    if (media.author != null) chips += "✍ ${media.author}"
-                    if (media.narrator != null) chips += "🎙 ${media.narrator}"
-                    if (media.durationHours != null) chips += "%.1f h".format(media.durationHours)
-                }
-                if (chips.isEmpty()) chips += "No extra metadata"
-                val flow = row(this@DetailActivity) { gravity = Gravity.CENTER_VERTICAL }
-                chips.take(6).forEachIndexed { i, c ->
-                    flow.addView(Chip(this@DetailActivity, c, t.colors.surfaceGlassStrong, t.colors.textSecondary, t),
-                        LinearLayout.LayoutParams(WRAP, WRAP).apply { if (i > 0) marginStart = dp(6) })
-                }
-                // simple wrap: use a second row if many chips
-                addView(flow, lp(MATCH, WRAP))
-                if (chips.size > 6) {
-                    val flow2 = row(this@DetailActivity) { gravity = Gravity.CENTER_VERTICAL }
-                    chips.drop(6).forEachIndexed { i, c ->
-                        flow2.addView(Chip(this@DetailActivity, c, t.colors.surfaceGlassStrong, t.colors.textSecondary, t),
-                            LinearLayout.LayoutParams(WRAP, WRAP).apply { if (i > 0) marginStart = dp(6) })
-                    }
-                    addView(flow2, lp(MATCH, WRAP, marginTopDp = 6))
-                }
-                if (media.overview.isNotBlank()) {
-                    addView(AppText(this@DetailActivity, media.overview, TextStyle.BODY, color = t.colors.textSecondary, t = t),
-                        lp(MATCH, WRAP, marginTopDp = t.space.md))
-                } else {
-                    addView(AppText(this@DetailActivity, "No overview available.", TextStyle.BODY, color = t.colors.textSecondary, t = t),
-                        lp(MATCH, WRAP, marginTopDp = t.space.md))
-                }
-            }
+            // ---------- meta card (re-rendered in place when details arrive) ----------
+            val metaCard = GlassCard(this@DetailActivity, padDp = t.space.lg.toInt(), t = t) {}
+            metaInner = metaCard.getChildAt(0) as LinearLayout
+            renderMeta(media, t)
             content.addView(metaCard, lp(MATCH, WRAP, marginTopDp = t.space.lg))
             metaCard.slideUpIn(delayMs = 80)
 
             // ---------- request action ----------
-            val actions = row(this@DetailActivity) { gravity = Gravity.CENTER_VERTICAL }
-            renderActions(actions, media, t)
-            content.addView(actions, lp(MATCH, WRAP, marginTopDp = t.space.lg))
+            actionsRow = row(this@DetailActivity) { gravity = Gravity.CENTER_VERTICAL }
+            renderActions(media, t)
+            content.addView(actionsRow, lp(MATCH, WRAP, marginTopDp = t.space.lg))
 
             // ---------- magnets ----------
             magnetsHeader = AppText(this@DetailActivity, "🧲 Magnets", TextStyle.TITLE, bold = true, t = t)
@@ -156,12 +126,41 @@ class DetailActivity : Activity() {
         setContentView(root)
     }
 
-    private fun renderActions(actions: LinearLayout, media: Media, t: DesignTokens) {
-        actions.removeAllViews()
+    private fun renderMeta(media: Media, t: DesignTokens) {
+        metaInner.removeAllViews()
+        val chips = mutableListOf<String>()
+        if (media.genres.isNotEmpty()) chips += media.genres
+        if (media.type == MediaType.SERIES && media.seasons != null) chips += "${media.seasons} seasons · ${media.episodes} eps"
+        if (media.type == MediaType.MOVIES && media.runtimeMinutes != null) chips += "${media.runtimeMinutes} min"
+        if (media.type == MediaType.AUDIOBOOKS) {
+            if (media.author != null) chips += "✍ ${media.author}"
+            if (media.narrator != null) chips += "🎙 ${media.narrator}"
+            if (media.durationHours != null) chips += "%.1f h".format(media.durationHours)
+        }
+        if (chips.isEmpty()) chips += "No extra metadata"
+        // simple wrapping flow: one row per chip, wrap manually into rows of ~3
+        var flow = row(this) { gravity = Gravity.CENTER_VERTICAL }
+        chips.forEachIndexed { i, c ->
+            if (i > 0 && i % 3 == 0) {
+                metaInner.addView(flow, metaInner.lp(MATCH, WRAP, marginTopDp = if (i == 3) 0 else 6))
+                flow = row(this) { gravity = Gravity.CENTER_VERTICAL }
+            }
+            flow.addView(Chip(this, c, t.colors.surfaceGlassStrong, fg = t.colors.textSecondary, t),
+                LinearLayout.LayoutParams(WRAP, WRAP).apply { if (i % 3 != 0) marginStart = dp(6) })
+        }
+        metaInner.addView(flow, metaInner.lp(MATCH, WRAP, marginTopDp = if (chips.size > 3) 6 else 0))
+        metaInner.addView(
+            AppText(this, media.overview.ifBlank { "No overview available." }, TextStyle.BODY, color = t.colors.textSecondary, t = t),
+            metaInner.lp(MATCH, WRAP, marginTopDp = t.space.md)
+        )
+    }
+
+    private fun renderActions(media: Media, t: DesignTokens) {
+        actionsRow.removeAllViews()
         val request = AppState.requestFor(media.id)
         when {
             media.available -> {
-                actions.addView(PrimaryButton(this, "✓ Available in library", enabled = false, t, onClick = {}), actions.lp(WRAP, WRAP))
+                actionsRow.addView(PrimaryButton(this, "✓ Available in library", enabled = false, t, onClick = {}), actionsRow.lp(WRAP, WRAP))
             }
             request != null -> {
                 val statusText = when (request.status) {
@@ -169,37 +168,46 @@ class DetailActivity : Activity() {
                     RequestStatus.PROCESSING -> "⚙ Requested — processing"
                     RequestStatus.AVAILABLE -> "✓ Requested — available"
                 }
-                actions.addView(PrimaryButton(this, statusText, enabled = false, t, onClick = {}), actions.lp(WRAP, WRAP))
-                actions.addView(DangerButton(this, "Cancel request", t) {
-                    AppState.store.delete(request.id)
-                    Toast.makeText(this, "Request removed", Toast.LENGTH_SHORT).show()
-                    recreate()
+                actionsRow.addView(PrimaryButton(this, statusText, enabled = false, t, onClick = {}), actionsRow.lp(WRAP, WRAP))
+                actionsRow.addView(DangerButton(this, "Cancel request", t) {
+                    AlertDialog.Builder(this)
+                        .setTitle("Cancel request?")
+                        .setMessage("Remove the request for \"${media.title}\"? (The *arr entry stays.)")
+                        .setPositiveButton("Remove") { _, _ ->
+                            AppState.store.delete(request.id)
+                            Toast.makeText(this, "Request removed", Toast.LENGTH_SHORT).show()
+                            renderActions(media, t)
+                        }
+                        .setNegativeButton("Keep", null)
+                        .show()
                 }, LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(8) })
             }
             else -> {
-                actions.addView(PrimaryButton(this, "＋ Request", t = t) { doRequest(media) }, actions.lp(WRAP, WRAP))
+                val btn = PrimaryButton(this, "＋ Request", t = t) { doRequest(media, it) }
+                actionsRow.addView(btn, actionsRow.lp(WRAP, WRAP))
             }
         }
     }
 
-    private fun doRequest(media: Media) {
-        Toast.makeText(this, "Submitting request…", Toast.LENGTH_SHORT).show()
+    private fun doRequest(media: Media, btn: TextView) {
+        btn.isEnabled = false
+        btn.text = "Requesting…"
         if (AppState.liveMode) {
             Thread {
                 val result = runCatching {
-                    val external = AppState.repo!!.request(media)
-                    AppState.store.create(media.id, external = external)
-                    "Added to ${if (external.startsWith("radarr")) "Radarr" else if (external.startsWith("sonarr")) "Sonarr" else "local list"}"
+                    val external = AppState.repo?.request(media) ?: throw ApiException("Live mode off")
+                    val created = AppState.store.create(media.id, external = external)
+                    if (created == null) "Already requested" else "Added to ${if (external.startsWith("radarr")) "Radarr" else if (external.startsWith("sonarr")) "Sonarr" else "local list"}"
                 }
                 handler.post {
                     Toast.makeText(this, result.getOrElse { "Failed: ${it.message}" }, Toast.LENGTH_LONG).show()
-                    recreate()
+                    renderActions(media, AppTheme.current)
                 }
             }.start()
         } else {
-            AppState.store.create(media.id)
-            Toast.makeText(this, "Request submitted — monitoring started", Toast.LENGTH_SHORT).show()
-            recreate()
+            val created = AppState.store.create(media.id)
+            Toast.makeText(this, if (created == null) "Already requested" else "Request submitted — monitoring started", Toast.LENGTH_SHORT).show()
+            renderActions(media, AppTheme.current)
         }
     }
 
@@ -207,13 +215,16 @@ class DetailActivity : Activity() {
         if (AppState.liveMode) {
             magnetsHeader.text = "🧲 Magnets — searching indexers…"
             Thread {
-                val res = runCatching { AppState.repo!!.magnetsFor(media) }
-                val mags = res.getOrElse { emptyList() }
+                val res = runCatching { AppState.repo?.magnetsFor(media) ?: emptyList() }
                 handler.post {
-                    magnetsHeader.text = if (res.isFailure)
-                        "🧲 Magnets — search failed: ${res.exceptionOrNull()?.message?.take(100)}"
-                    else "🧲 Magnets (${mags.size})"
-                    renderMagnets(mags, t)
+                    if (isFinishing || isDestroyed) return@post
+                    if (res.isFailure) {
+                        magnetsHeader.text = "🧲 Magnets — search failed"
+                        renderMagnets(emptyList(), t, error = res.exceptionOrNull()?.message?.take(100))
+                    } else {
+                        magnetsHeader.text = "🧲 Magnets (${res.getOrDefault(emptyList()).size})"
+                        renderMagnets(res.getOrDefault(emptyList()), t)
+                    }
                 }
             }.start()
         } else {
@@ -225,10 +236,17 @@ class DetailActivity : Activity() {
         }
     }
 
-    private fun renderMagnets(mags: List<LiveMagnet>, t: DesignTokens) {
+    private fun renderMagnets(mags: List<LiveMagnet>, t: DesignTokens, error: String? = null) {
         magnetsBox.removeAllViews()
-        if (mags.isEmpty()) {
-            magnetsBox.addView(EmptyState(this, "🧲", "No magnets", "No results on the indexers for this title.", t))
+        if (error != null || mags.isEmpty()) {
+            val box = col(this) {
+                gravity = Gravity.CENTER
+                val p = dp(t.space.xl); setPadding(p, p, p, p)
+                addView(AppText(this@DetailActivity, if (error != null) "Search failed: $error" else "No magnets found on the indexers for this title.", TextStyle.BODY, color = t.colors.textSecondary, t = t))
+                addView(SecondaryButton(this@DetailActivity, "Retry", t) { loadMagnets(AppState.mediaById(intent.getStringExtra("mediaId") ?: "") ?: return@SecondaryButton, t) },
+                    LinearLayout.LayoutParams(WRAP, WRAP).apply { topMargin = dp(t.space.md); gravity = Gravity.CENTER })
+            }
+            magnetsBox.addView(box)
             return
         }
         mags.forEachIndexed { i, mag ->
@@ -239,14 +257,25 @@ class DetailActivity : Activity() {
     }
 
     private fun copyMagnet(mag: LiveMagnet) {
+        Toast.makeText(this, "Resolving magnet…", Toast.LENGTH_SHORT).show()
         Thread {
-            val uri = runCatching {
-                if (AppState.liveMode) AppState.repo!!.resolveMagnet(mag) else mag.magnetUri
-            }.getOrElse { mag.downloadUrl }
+            val res = runCatching {
+                val uri = if (AppState.liveMode) AppState.repo?.resolveMagnet(mag) ?: "" else mag.magnetUri
+                // only a real magnet/torrent link is ever copied — never the apikey-bearing download URL
+                if (uri.startsWith("magnet:", ignoreCase = true) || uri.contains(".torrent")) uri
+                else throw ApiException("Indexer did not return a magnet link")
+            }
             handler.post {
-                val clip = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                clip.setPrimaryClip(ClipData.newPlainText("magnet", uri))
-                Toast.makeText(this, "Magnet link copied", Toast.LENGTH_SHORT).show()
+                res.fold(
+                    onSuccess = { uri ->
+                        val clip = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clip.setPrimaryClip(ClipData.newPlainText("magnet", uri))
+                        Toast.makeText(this, "Magnet link copied", Toast.LENGTH_SHORT).show()
+                    },
+                    onFailure = { e ->
+                        Toast.makeText(this, "Magnet resolve failed: ${e.message?.take(80)}", Toast.LENGTH_LONG).show()
+                    }
+                )
             }
         }.start()
     }

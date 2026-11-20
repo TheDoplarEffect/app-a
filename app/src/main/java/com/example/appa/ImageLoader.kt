@@ -29,11 +29,12 @@ object ImageLoader {
         view.setBackgroundColor(AppTheme.current.colors.surfaceGlassStrong)
         executor.execute {
             val bmp = runCatching {
-                URL(url).openStream().use { BitmapFactory.decodeStream(it) }
+                val resp = realHttp("GET", url, emptyMap(), null, true)
+                if (resp.ok) BitmapFactory.decodeByteArray(resp.bytes, 0, resp.bytes.size) else null
             }.getOrNull()
             if (bmp != null) cache.put(url, bmp)
             main.post {
-                if (view.tag == url) {
+                if (view.tag == url && view.isAttachedToWindow) {
                     if (bmp != null) {
                         view.setImageBitmap(bmp)
                         view.background = null

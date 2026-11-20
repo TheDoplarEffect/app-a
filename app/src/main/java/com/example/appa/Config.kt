@@ -34,10 +34,15 @@ data class AppConfig(
     )
 
     val hasTmdb: Boolean get() = tmdbToken.isNotBlank()
-    val hasSonarr: Boolean get() = sonarrUrl.isNotBlank() && sonarrKey.isNotBlank()
-    val hasRadarr: Boolean get() = radarrUrl.isNotBlank() && radarrKey.isNotBlank()
-    val hasProwlarr: Boolean get() = prowlarrUrl.isNotBlank() && prowlarrKey.isNotBlank()
-    val hasJellyfin: Boolean get() = jellyfinUrl.isNotBlank() && jellyfinKey.isNotBlank()
+    /** A service URL must be blank or carry an explicit http(s) scheme. */
+    private fun validUrl(u: String) = u.isBlank() || u.startsWith("http://") || u.startsWith("https://")
+    fun urlError(u: String): String? =
+        if (validUrl(u)) null else "URL needs http:// or https://"
+
+    val hasSonarr: Boolean get() = sonarrUrl.isNotBlank() && sonarrKey.isNotBlank() && validUrl(sonarrUrl)
+    val hasRadarr: Boolean get() = radarrUrl.isNotBlank() && radarrKey.isNotBlank() && validUrl(radarrUrl)
+    val hasProwlarr: Boolean get() = prowlarrUrl.isNotBlank() && prowlarrKey.isNotBlank() && validUrl(prowlarrUrl)
+    val hasJellyfin: Boolean get() = jellyfinUrl.isNotBlank() && jellyfinKey.isNotBlank() && validUrl(jellyfinUrl)
 
     /** Live mode needs TMDB (metadata) plus at least one request backend. */
     val liveReady: Boolean

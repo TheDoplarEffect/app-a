@@ -173,8 +173,11 @@ data class RawTorrent(
 )
 
 class ProwlarrClient(private val baseUrl: String, private val apiKey: String, private val http: HttpTransport = realHttp) {
+    private val headers = mapOf("X-Api-Key" to apiKey)
+    private fun url(path: String, params: String) =
+        "$baseUrl$path" + (if (params.isBlank()) "" else "?$params")
     private fun api(path: String, params: String = ""): JsonElement =
-        httpGetJson("$baseUrl$path?apikey=$apiKey&$params", emptyMap(), http)
+        httpGetJsonRetrying(url(path, params), headers, http)
 
     fun indexerIdByName(fragment: String): Int? =
         runCatching {
@@ -204,18 +207,19 @@ class ProwlarrClient(private val baseUrl: String, private val apiKey: String, pr
         }
     }
 
-    /** Resolve a raw result to a real magnet link (Prowlarr 301 -> Location: magnet:...). */
-    fun magnetOf(raw: RawTorrent): String = magnetFromDownloadUrl(raw.downloadUrl, http)
 }
 
 // ---------------------------------------------------------------- Sonarr / Radarr
 
 class SonarrClient(private val baseUrl: String, private val apiKey: String, private val http: HttpTransport = realHttp) {
+    private val headers = mapOf("X-Api-Key" to apiKey)
+    private fun url(path: String, params: String) =
+        "$baseUrl$path" + (if (params.isBlank()) "" else "?$params")
     private fun api(path: String, params: String = ""): JsonElement =
-        httpGetJson("$baseUrl$path?apikey=$apiKey&$params", emptyMap(), http)
+        httpGetJsonRetrying(url(path, params), headers, http)
 
     private fun post(path: String, body: String): JsonElement {
-        val resp = http("POST", "$baseUrl$path?apikey=$apiKey", mapOf("Content-Type" to "application/json"), body, true)
+        val resp = http("POST", url(path, ""), headers + ("Content-Type" to "application/json"), body, true)
         if (!resp.ok) throw ApiException("Sonarr HTTP ${resp.status}: ${resp.body.take(200)}", resp.status)
         return json.parseToJsonElement(resp.body)
     }
@@ -268,11 +272,14 @@ class SonarrClient(private val baseUrl: String, private val apiKey: String, priv
 }
 
 class RadarrClient(private val baseUrl: String, private val apiKey: String, private val http: HttpTransport = realHttp) {
+    private val headers = mapOf("X-Api-Key" to apiKey)
+    private fun url(path: String, params: String) =
+        "$baseUrl$path" + (if (params.isBlank()) "" else "?$params")
     private fun api(path: String, params: String = ""): JsonElement =
-        httpGetJson("$baseUrl$path?apikey=$apiKey&$params", emptyMap(), http)
+        httpGetJsonRetrying(url(path, params), headers, http)
 
     private fun post(path: String, body: String): JsonElement {
-        val resp = http("POST", "$baseUrl$path?apikey=$apiKey", mapOf("Content-Type" to "application/json"), body, true)
+        val resp = http("POST", url(path, ""), headers + ("Content-Type" to "application/json"), body, true)
         if (!resp.ok) throw ApiException("Radarr HTTP ${resp.status}: ${resp.body.take(200)}", resp.status)
         return json.parseToJsonElement(resp.body)
     }

@@ -4,19 +4,21 @@ import android.content.Context
 
 /** App-wide singletons: config, catalog/repository, persisted request store. */
 object AppState {
-    val catalog: Catalog = Catalog
-
     lateinit var store: RequestStoreCore
         private set
 
-    var config: AppConfig = AppConfig()
-        private set
+    /** Atomic (config, repo) pair — never observe one without the other. */
+    private data class State(val config: AppConfig, val repo: LiveRepository?)
+    @Volatile private var state: State = State(AppConfig(), null)
 
-    var repo: LiveRepository? = null
-        private set
+    /** Set when SecureStore had to wipe the config (key invalidated) — Settings surfaces it. */
+    @Volatile var configWasWiped: Boolean = false
+
+    val config: AppConfig get() = state.config
+    val repo: LiveRepository? get() = state.repo
 
     /** Live mode is on when the config is complete enough to serve real data. */
-    val liveMode: Boolean get() = config.normalized().liveReady
+    val liveMode: Boolean get() = state.config.normalized().liveReady
 
     fun init(context: Context) {
         if (::store.isInitialized) return
@@ -25,21 +27,19 @@ object AppState {
             load = { prefs.getString("requests", null) },
             save = { value -> prefs.edit().putString("requests", value).apply() }
         )
-        config = SecureStore.loadConfig(context)
-        if (config.normalized().liveReady) {
-            repo = LiveRepository(config)
-        }
+        configWasWiped = SecureStore.wasWiped
+        val cfg = SecureStore.loadConfig(context)
+        state = State(cfg, if (cfg.normalized().liveReady) LiveRepository(cfg) else null)
     }
 
     fun saveConfig(context: Context, cfg: AppConfig) {
         val normalized = cfg.normalized()
         SecureStore.saveConfig(context, normalized)
-        config = normalized
-        repo = if (normalized.liveReady) LiveRepository(normalized) else null
+        state = State(normalized, if (normalized.liveReady) LiveRepository(normalized) else null)
     }
 
     fun requestFor(mediaId: String): Request? = store.byMediaId(mediaId)
 
     /** Resolve a media id to a live item first, then the placeholder catalog. */
-    fun mediaById(id: String): Media? = repo?.mediaById(id) ?: Catalog.byId[id]
+    fun mediaById(id: String): Media? = state.repo?.mediaById(id) ?: Catalog.byId[id]
 }

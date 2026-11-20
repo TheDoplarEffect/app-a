@@ -102,7 +102,7 @@ fun View.pressable(): View {
 
 // ------------------------------------------------------------------ top bar
 
-data class TopBarAction(val icon: String, val label: String = "", var badge: Int = 0, val onClick: () -> Unit)
+data class TopBarAction(val icon: String, val contentDescription: String = icon, var badge: Int = 0, val onClick: () -> Unit)
 
 /**
  * Top app bar atom: large title + optional subtitle on the left, circular
@@ -118,14 +118,14 @@ fun AppTopBar(
 ): LinearLayout = col(ctx) {
     row(ctx) {
         gravity = Gravity.CENTER_VERTICAL
-        if (leading != null) addView(CircleIconButton(ctx, leading.icon, 0, t, leading.onClick), lp(WRAP, WRAP, marginStartDp = 0))
+        if (leading != null) addView(CircleIconButton(ctx, leading.icon, 0, t, leading.contentDescription, leading.onClick), lp(WRAP, WRAP, marginStartDp = 0))
         col(ctx) {
             addView(AppText(ctx, title, TextStyle.HEADLINE, t = t))
             if (subtitle != null) addView(AppText(ctx, subtitle, TextStyle.LABEL, t = t))
             layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = ctx.dp(if (leading != null) 12 else 0) }
         }
         actions.forEach { a ->
-            addView(CircleIconButton(ctx, a.icon, a.badge, t, a.onClick).apply { tag = "top_action_${a.icon}" }, lp(WRAP, WRAP, marginStartDp = 8))
+            addView(CircleIconButton(ctx, a.icon, a.badge, t, a.contentDescription, a.onClick).apply { tag = "top_action_${a.icon}" }, lp(WRAP, WRAP, marginStartDp = 8))
         }
     }.let { addView(it, lp(MATCH, WRAP)) }
 }
@@ -138,19 +138,21 @@ fun CircleIconButton(
     icon: String,
     badge: Int = 0,
     t: DesignTokens = AppTheme.current,
+    contentDescription: String = icon,
     onClick: () -> Unit
 ): FrameLayout {
-    val size = ctx.dp(40)
+    val size = ctx.dp(48) // M3 minimum touch target
     return FrameLayout(ctx).apply {
         glass(t.radius.pill, t = t)
         addView(AppText(ctx, icon, TextStyle.TITLE, t = t).apply { gravity = Gravity.CENTER },
             FrameLayout.LayoutParams(size, size, Gravity.CENTER))
         if (badge > 0) {
-            addView(Chip(ctx, badge.toString(), t.colors.error, t.colors.textOnAccent, t).apply { tag = "badge" },
+            addView(Chip(ctx, badge.toString(), withAlpha(t.colors.error, 0.30f), fg = t.colors.error, t = t).apply { tag = "badge" },
                 FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.END).apply {
                     topMargin = ctx.dp(2); marginEnd = ctx.dp(2)
                 })
         }
+        this.contentDescription = contentDescription
         setOnClickListener { onClick() }
         pressable()
     }
@@ -161,7 +163,7 @@ fun FrameLayout.setBadge(n: Int, t: DesignTokens = AppTheme.current) {
     val existing = findViewWithTag<TextView>("badge")
     when {
         n > 0 && existing == null -> addView(
-            Chip(context, n.toString(), t.colors.error, t.colors.textOnAccent, t).apply { tag = "badge" },
+            Chip(context, n.toString(), withAlpha(t.colors.error, 0.30f), fg = t.colors.error, t = t).apply { tag = "badge" },
             FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.END).apply {
                 topMargin = context.dp(2); marginEnd = context.dp(2)
             }
@@ -174,15 +176,16 @@ fun FrameLayout.setBadge(n: Int, t: DesignTokens = AppTheme.current) {
 // ------------------------------------------------------------------ buttons
 
 /** Primary button: accent gradient pill, white label. */
-fun PrimaryButton(ctx: Context, label: String, enabled: Boolean = true, t: DesignTokens = AppTheme.current, onClick: () -> Unit): TextView =
+fun PrimaryButton(ctx: Context, label: String, enabled: Boolean = true, t: DesignTokens = AppTheme.current, onClick: (TextView) -> Unit): TextView =
     AppText(ctx, label, TextStyle.TITLE, color = t.colors.textOnAccent, bold = true, t = t).apply {
         gravity = Gravity.CENTER
         background = ctx.accentGradient(t.radius.button, t)
-        val px = ctx.dp(20); val py = ctx.dp(12)
+        val px = ctx.dp(20); val py = ctx.dp(14)
         setPadding(px, py, px, py)
+        minimumHeight = ctx.dp(48)
         isEnabled = enabled
         alpha = if (enabled) 1f else 0.45f
-        setOnClickListener { onClick() }
+        setOnClickListener { onClick(this) }
         pressable()
     }
 
@@ -191,8 +194,9 @@ fun SecondaryButton(ctx: Context, label: String, t: DesignTokens = AppTheme.curr
     AppText(ctx, label, TextStyle.TITLE, color = t.colors.accentSolid, bold = true, t = t).apply {
         gravity = Gravity.CENTER
         glass(t.radius.button, t = t)
-        val px = ctx.dp(16); val py = ctx.dp(12)
+        val px = ctx.dp(16); val py = ctx.dp(14)
         setPadding(px, py, px, py)
+        minimumHeight = ctx.dp(48)
         setOnClickListener { onClick() }
         pressable()
     }
@@ -202,8 +206,9 @@ fun DangerButton(ctx: Context, label: String, t: DesignTokens = AppTheme.current
     AppText(ctx, label, TextStyle.BODY, color = t.colors.error, bold = true, t = t).apply {
         gravity = Gravity.CENTER
         glass(t.radius.button, t = t)
-        val px = ctx.dp(14); val py = ctx.dp(10)
+        val px = ctx.dp(14); val py = ctx.dp(14)
         setPadding(px, py, px, py)
+        minimumHeight = ctx.dp(48)
         setOnClickListener { onClick() }
         pressable()
     }
@@ -222,6 +227,7 @@ class BottomNavBar(private val ctx: Context, val items: List<NavItem>, initial: 
     private val pills = mutableListOf<View>()
     var selected = initial
         private set
+    private var initialized = false
 
     init {
         root.glass(t.radius.card, strong = true, t = t)
@@ -238,7 +244,7 @@ class BottomNavBar(private val ctx: Context, val items: List<NavItem>, initial: 
                 background = ctx.accentGradient(t.radius.pill, t)
                 scaleX = 0f
                 alpha = 0f
-                elevation = ctx.dp(3).toFloat()
+                elevation = ctx.dpF(t.elevation.level1Dp)
             }
             val label = col(ctx) {
                 gravity = Gravity.CENTER
@@ -256,11 +262,11 @@ class BottomNavBar(private val ctx: Context, val items: List<NavItem>, initial: 
             root.addView(cell, LinearLayout.LayoutParams(0, WRAP, 1f))
             cells.add(cell); pills.add(pill)
         }
-        root.post { select(initial, animate = false) }
+        root.post { select(initial, animate = false); initialized = true }
     }
 
     fun select(i: Int, animate: Boolean = true) {
-        if (i == selected && pills.any { it.alpha > 0.5f }) return
+        if (i == selected && initialized) return
         selected = i
         val m = AppTheme.current.motion
         cells.forEachIndexed { idx, cell ->
@@ -290,24 +296,42 @@ class BottomNavBar(private val ctx: Context, val items: List<NavItem>, initial: 
 
 /** Glass search field atom with icon, debounce and a clear button. */
 class SearchField(ctx: Context, hint: String, t: DesignTokens = AppTheme.current, onQuery: (String) -> Unit) {
+    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var pending: Runnable? = null
+    lateinit var input: EditText
+        private set
     val root: LinearLayout = row(ctx) {
         gravity = Gravity.CENTER_VERTICAL
         glass(t.radius.button, t = t)
         val p = ctx.dp(14); setPadding(p, ctx.dp(10), p, ctx.dp(10))
         addView(AppText(ctx, "🔍", TextStyle.BODY, t = t))
-        val input = EditText(ctx).apply {
+        input = EditText(ctx).apply {
             this.hint = hint
             setHintTextColor(t.colors.textSecondary)
             setTextColor(t.colors.textPrimary)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, t.type.bodySp)
             background = null
+            minimumHeight = ctx.dp(48)
             val lp = LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = ctx.dp(8) }
             layoutParams = lp
             isSingleLine = true
+            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
+            setOnEditorActionListener { _, actionId, _ ->
+                if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH) {
+                    val imm = ctx.getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+                    imm.hideSoftInputFromWindow(windowToken, 0)
+                    true
+                } else false
+            }
         }
         addView(input)
-        val clear = AppText(ctx, "✕", TextStyle.BODY, color = t.colors.textSecondary, t = t).apply {
+        val clear = FrameLayout(ctx).apply {
             visibility = View.GONE
+            val size = ctx.dp(48)
+            addView(AppText(ctx, "✕", TextStyle.BODY, color = t.colors.textSecondary, t = t).apply {
+                gravity = Gravity.CENTER
+                contentDescription = "Clear search"
+            }, FrameLayout.LayoutParams(size, size, Gravity.CENTER))
             setOnClickListener { input.setText("") }
             pressable()
         }
@@ -323,19 +347,17 @@ class SearchField(ctx: Context, hint: String, t: DesignTokens = AppTheme.current
             override fun afterTextChanged(s: Editable?) {}
         })
     }
-    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
-    private var pending: Runnable? = null
-    val input: EditText get() = (root.getChildAt(1) as EditText)
-    fun setTextSilently(q: String) {
+    /** Replace the text without firing onQuery (used when switching tabs). */
+    fun clearSilently() {
         pending?.let { handler.removeCallbacks(it) }
-        input.setText(q)
+        input.setText("")
     }
 }
 
 // ------------------------------------------------------------------ chips & pills
 
-fun Chip(ctx: Context, text: String, bg: Int, fg: Int = 0xFFFFFFFF.toInt(), t: DesignTokens = AppTheme.current): TextView =
-    AppText(ctx, text, TextStyle.LABEL, color = fg, bold = true, t = t).apply {
+fun Chip(ctx: Context, text: String, bg: Int, fg: Int? = null, t: DesignTokens = AppTheme.current): TextView =
+    AppText(ctx, text, TextStyle.LABEL, color = fg ?: t.colors.textOnAccent, bold = true, t = t).apply {
         gravity = Gravity.CENTER
         background = android.graphics.drawable.GradientDrawable().apply {
             cornerRadius = ctx.dp(t.radius.pill).toFloat()
@@ -344,6 +366,12 @@ fun Chip(ctx: Context, text: String, bg: Int, fg: Int = 0xFFFFFFFF.toInt(), t: D
         val px = ctx.dp(8); val py = ctx.dp(3)
         setPadding(px, py, px, py)
     }
+
+/** Recolor an existing chip (used for live test-result updates). */
+fun TextView.restyleChip(color: Int, t: DesignTokens = AppTheme.current) {
+    (background as? android.graphics.drawable.GradientDrawable)?.setColor(withAlpha(color, 0.22f))
+    setTextColor(color)
+}
 
 fun statusColorOf(status: RequestStatus?, t: DesignTokens = AppTheme.current): Int = when (status) {
     RequestStatus.AVAILABLE -> t.colors.success
@@ -364,7 +392,9 @@ fun statusLabelOf(media: Media, status: RequestStatus?): String? {
 
 fun StatusPill(ctx: Context, media: Media, status: RequestStatus?, t: DesignTokens = AppTheme.current): TextView? {
     val label = statusLabelOf(media, status) ?: return null
-    return Chip(ctx, label, statusColorOf(status, t), t = t)
+    val color = statusColorOf(status, t)
+    // tinted background + colored text: passes WCAG contrast on dark and light themes
+    return Chip(ctx, label, withAlpha(color, 0.22f), fg = color, t = t)
 }
 
 // ------------------------------------------------------------------ glass card
@@ -386,24 +416,33 @@ fun GlassCard(ctx: Context, padDp: Int = 16, strong: Boolean = false, t: DesignT
 class GradientPoster(ctx: Context, val media: Media, t: DesignTokens = AppTheme.current) : View(ctx) {
     private val c1 = Color.parseColor(media.color1)
     private val c2 = Color.parseColor(media.color2)
+    // pick a text color that keeps WCAG contrast on this gradient
+    private val textColor: Int = run {
+        val avg = ((luminance(c1) + luminance(c2)) / 2.0)
+        if (avg > 0.45) 0xFF101828.toInt() else t.colors.textOnAccent
+    }
     private val titlePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE; typeface = android.graphics.Typeface.DEFAULT_BOLD; textAlign = android.graphics.Paint.Align.CENTER
+        color = textColor; typeface = android.graphics.Typeface.DEFAULT_BOLD; textAlign = android.graphics.Paint.Align.CENTER
     }
     private val labelPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-        color = withAlpha(Color.WHITE, 0.85f); textAlign = android.graphics.Paint.Align.CENTER
+        color = withAlpha(textColor, 0.85f); textAlign = android.graphics.Paint.Align.CENTER
     }
     private val bgPaint = android.graphics.Paint()
 
     override fun onMeasure(wSpec: Int, hSpec: Int) {
         val w = MeasureSpec.getSize(wSpec)
-        setMeasuredDimension(w, w * 3 / 2)
+        val h = when (MeasureSpec.getMode(hSpec)) {
+            MeasureSpec.EXACTLY -> MeasureSpec.getSize(hSpec)
+            else -> w * 3 / 2 // 2:3 poster aspect
+        }
+        setMeasuredDimension(w, h)
     }
 
     override fun onDraw(canvas: android.graphics.Canvas) {
         val w = width.toFloat(); val h = height.toFloat()
         bgPaint.shader = android.graphics.LinearGradient(0f, 0f, w, h, c1, c2, android.graphics.Shader.TileMode.CLAMP)
         canvas.drawRect(0f, 0f, w, h, bgPaint)
-        val deco = android.graphics.Paint().apply { color = withAlpha(Color.WHITE, 0.08f) }
+        val deco = android.graphics.Paint().apply { color = withAlpha(textColor, 0.08f) }
         canvas.drawCircle(w * 0.84f, h * 0.14f, w * 0.33f, deco)
         labelPaint.textSize = w * 0.05f
         canvas.drawText(media.type.label.uppercase(), w / 2f, h * 0.12f, labelPaint)
@@ -427,7 +466,7 @@ class GradientPoster(ctx: Context, val media: Media, t: DesignTokens = AppTheme.
  * Poster grid cell atom: 2:3 poster (image or gradient) with rounded corners,
  * bottom scrim, rating chip, status badge, title + subtitle below.
  */
-fun PosterCard(ctx: Context, m: Media, t: DesignTokens = AppTheme.current, onClick: () -> Unit): View {
+fun PosterCard(ctx: Context, m: Media, status: RequestStatus? = null, t: DesignTokens = AppTheme.current, onClick: () -> Unit): View {
     val cell = col(ctx) {
         layoutParams = GridLayout.LayoutParams().apply {
             width = 0
@@ -441,6 +480,7 @@ fun PosterCard(ctx: Context, m: Media, t: DesignTokens = AppTheme.current, onCli
                 scaleType = ImageView.ScaleType.CENTER_CROP
                 minimumHeight = ctx.dp(150)
                 roundedClip(t.radius.poster)
+                contentDescription = "${m.title} poster"
             }
             posterFrame.addView(img, FrameLayout.LayoutParams(MATCH, WRAP))
             ImageLoader.load(m.posterUrl!!, img)
@@ -452,11 +492,11 @@ fun PosterCard(ctx: Context, m: Media, t: DesignTokens = AppTheme.current, onCli
         posterFrame.addView(View(ctx).apply {
             background = ctx.posterScrim(56, t)
         }, FrameLayout.LayoutParams(MATCH, ctx.dp(56), Gravity.BOTTOM))
-        posterFrame.addView(Chip(ctx, "★ %.1f".format(m.rating), 0xB3000000.toInt(), t = t),
+        posterFrame.addView(Chip(ctx, "★ %.1f".format(m.rating), t.colors.chipScrim, fg = 0xFFFFFFFF.toInt(), t = t),
             FrameLayout.LayoutParams(WRAP, WRAP, Gravity.BOTTOM or Gravity.START).apply {
                 bottomMargin = ctx.dp(6); marginStart = ctx.dp(6)
             })
-        StatusPill(ctx, m, AppState.requestFor(m.id)?.status, t)?.let { pill ->
+        StatusPill(ctx, m, status, t)?.let { pill ->
             posterFrame.addView(pill, FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.START).apply {
                 topMargin = ctx.dp(6); marginStart = ctx.dp(6)
             })
@@ -473,7 +513,12 @@ fun PosterCard(ctx: Context, m: Media, t: DesignTokens = AppTheme.current, onCli
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
         })
-        setOnClickListener { onClick() }
+        contentDescription = "${m.title}, ${m.year}, ${m.type.label}"
+        setOnClickListener {
+            if (!isClickable) return@setOnClickListener // double-tap guard
+            isClickable = false
+            onClick()
+        }
         pressable()
     }
     return cell
@@ -512,20 +557,27 @@ fun EmptyState(ctx: Context, emoji: String, title: String, message: String, t: D
 fun Skeleton(ctx: Context, w: Int, hDp: Int, t: DesignTokens = AppTheme.current): View {
     val v = View(ctx).apply {
         glass(t.radius.button, t = t)
-        layoutParams = when (val p = layoutParams) {
-            is FrameLayout.LayoutParams -> FrameLayout.LayoutParams(w, ctx.dp(hDp))
-            is LinearLayout.LayoutParams -> LinearLayout.LayoutParams(w, ctx.dp(hDp))
-            else -> ViewGroup.LayoutParams(w, ctx.dp(hDp))
+        layoutParams = ViewGroup.LayoutParams(w, ctx.dp(hDp))
+    }
+    val reduceMotion = android.provider.Settings.Global.getFloat(
+        ctx.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f
+    ) == 0f
+    if (reduceMotion) {
+        v.alpha = 0.6f
+    } else {
+        val shimmer = android.animation.ValueAnimator.ofFloat(1f, 0.4f).apply {
+            duration = t.motion.longMs
+            repeatCount = android.animation.ValueAnimator.INFINITE
+            repeatMode = android.animation.ValueAnimator.REVERSE
+            addUpdateListener { v.alpha = it.animatedValue as Float }
         }
+        v.fadeIn(durationMs = t.motion.shortMs)
+        shimmer.start()
+        v.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(view: View) {}
+            override fun onViewDetachedFromWindow(view: View) { shimmer.cancel() }
+        })
     }
-    val shimmer = android.animation.ValueAnimator.ofFloat(1f, 0.4f).apply {
-        duration = t.motion.longMs
-        repeatCount = android.animation.ValueAnimator.INFINITE
-        repeatMode = android.animation.ValueAnimator.REVERSE
-        addUpdateListener { v.alpha = it.animatedValue as Float }
-    }
-    v.fadeIn(durationMs = t.motion.shortMs)
-    shimmer.start()
     return v
 }
 
@@ -556,6 +608,7 @@ fun FormField(ctx: Context, label: String, value: String, hint: String = "", sec
         setTextSize(TypedValue.COMPLEX_UNIT_SP, t.type.bodySp)
         glass(t.radius.button, t = t)
         val p = ctx.dp(12); setPadding(p, p, p, p)
+        minimumHeight = ctx.dp(48)
         isSingleLine = true
         if (secret) inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
     }
