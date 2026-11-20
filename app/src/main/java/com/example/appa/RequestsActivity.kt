@@ -1,74 +1,66 @@
 package com.example.appa
 
 import android.app.Activity
-import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.view.Gravity
-import android.widget.Button
+import android.view.View
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
-import android.widget.TextView
 import android.widget.Toast
 
 /**
- * Requests screen: live list of requested titles with status pills.
- * Live mode polls Jellyfin + *arr; placeholder mode uses the simulated ticker.
+ * Requests screen (organism): glass list of requested titles with animated
+ * status pills. Live mode polls Jellyfin + *arr every 5s; placeholder mode
+ * runs the simulated ticker.
  */
 class RequestsActivity : Activity() {
 
     private lateinit var list: LinearLayout
-    private lateinit var countLabel: TextView
+    private lateinit var countLabel: android.widget.TextView
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var ticker: Runnable
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        edgeToEdge()
         AppState.init(this)
+        val t = AppTheme.current
 
-        val root = Ui.vRow(this)
-        Ui.padded(root, 14)
-        root.setBackgroundColor(Color.WHITE)
+        val root = FrameLayout(this).withAurora()
+        val body = col(this) {
+            padSystemBars(top = true, bottom = true, start = true, end = true, extraTopDp = t.space.sm, extraBottomDp = t.space.sm)
+            val px = dp(t.space.lg); setPadding(px, paddingTop, px, paddingBottom)
 
-        val header = Ui.hRow(this).apply { gravity = Gravity.CENTER_VERTICAL }
-        header.addView(Button(this).apply {
-            text = "‹ Back"
-            setTextColor(Ui.ACCENT)
-            background = pillBg(Ui.CARD_BG, 8)
-            setOnClickListener { finish() }
-        })
-        header.addView(Ui.textView(this, "Requests", 18f, Ui.TEXT, bold = true).apply {
-            val p = dp(10); setPadding(p, 0, 0, 0)
-        })
-        countLabel = Ui.textView(this, "", 12f, Ui.DIM)
-        header.addView(countLabel, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-            gravity = Gravity.END
-        })
-        root.addView(header, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-        root.addView(Ui.textView(
-            this,
-            if (AppState.liveMode) "Live status from Jellyfin + Sonarr/Radarr (polled every 5s)"
-            else "Simulated monitoring — pending → processing → available",
-            11f, Ui.DIM
-        ).apply { val p = dp(4); setPadding(0, p, 0, 0) })
-        root.addView(Ui.divider(this).apply {
-            val lp = this.layoutParams as LinearLayout.LayoutParams
-            lp.topMargin = dp(8); lp.bottomMargin = dp(4)
-        })
+            val topBar = AppTopBar(
+                this@RequestsActivity,
+                "Requests",
+                leading = TopBarAction("✕") { finishDropping() }
+            )
+            addView(topBar, lp(MATCH, WRAP))
+            countLabel = AppText(this@RequestsActivity, "", TextStyle.LABEL, t = t)
+            addView(countLabel, lp(MATCH, WRAP, marginTopDp = t.space.xs))
+            addView(AppText(
+                this@RequestsActivity,
+                if (AppState.liveMode) "Live status from Jellyfin + Sonarr/Radarr — polled every 5s"
+                else "Simulated monitoring — pending → processing → available",
+                TextStyle.LABEL, t = t
+            ), lp(MATCH, WRAP, marginTopDp = t.space.xs))
 
-        val scroll = ScrollView(this)
-        list = Ui.vRow(this)
-        scroll.addView(list)
-        root.addView(scroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
-
+            val scroll = ScrollView(this@RequestsActivity)
+            list = col(this@RequestsActivity)
+            scroll.addView(list)
+            addView(scroll, lp(MATCH, 0, weight = 1f, marginTopDp = t.space.md))
+        }
+        root.addView(body, FrameLayout.LayoutParams(MATCH, MATCH))
         setContentView(root)
 
         render()
         ticker = object : Runnable {
             override fun run() {
                 if (AppState.liveMode) {
-                    AppState.store.tick() // local-only (audiobook) requests still advance
+                    AppState.store.tick()
                     Thread {
                         runCatching { AppState.repo?.refreshStatuses(AppState.store) }
                         handler.post { render() }
@@ -89,70 +81,54 @@ class RequestsActivity : Activity() {
     }
 
     private fun render() {
+        val t = AppTheme.current
         list.removeAllViews()
         val requests = AppState.store.all().sortedByDescending { it.requestedAt }
         countLabel.text = "${requests.size} total"
         if (requests.isEmpty()) {
-            list.addView(Ui.textView(this, "No requests yet. Open a title and hit \"＋ Request\".", 13f, Ui.DIM).apply {
-                val p = dp(16); setPadding(0, p, 0, 0)
-            })
+            list.addView(EmptyState(this, "📥", "No requests yet", "Open a title and hit \"＋ Request\".", t))
             return
         }
-        for (r in requests) {
-            val media = AppState.mediaById(r.mediaId) ?: continue
-            val row = Ui.hRow(this).apply {
-                gravity = Gravity.CENTER_VERTICAL
-                background = pillBg(Ui.CARD_BG, 8)
-                val p = dp(10); setPadding(p, p, p, p)
-                val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                lp.topMargin = dp(8)
-                layoutParams = lp
-            }
-            if (media.posterUrl != null) {
-                val img = android.widget.ImageView(this).apply {
-                    scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
+        requests.forEachIndexed { i, r ->
+            val media = AppState.mediaById(r.mediaId) ?: return@forEachIndexed
+            val card = GlassCard(this, padDp = t.space.md.toInt(), t = t) {
+                val rrow = row(this@RequestsActivity) {
+                    gravity = android.view.Gravity.CENTER_VERTICAL
+                    if (media.posterUrl != null) {
+                        val img = android.widget.ImageView(this@RequestsActivity).apply {
+                            scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
+                            roundedClip(12)
+                        }
+                        addView(img, LinearLayout.LayoutParams(dp(44), dp(64)))
+                        ImageLoader.load(media.posterUrl!!, img)
+                    } else {
+                        addView(GradientPoster(this@RequestsActivity, media, t).apply { roundedClip(12) },
+                            LinearLayout.LayoutParams(dp(44), dp(64)))
+                    }
+                    val info = col(this@RequestsActivity) {
+                        addView(AppText(this@RequestsActivity, media.title, TextStyle.BODY, bold = true, t = t))
+                        addView(AppText(
+                            this@RequestsActivity,
+                            "${media.type.label} · ${media.year} · ${formatTime(r.requestedAt)}" +
+                                (if (r.external.isNotBlank()) " · ${r.external.substringBefore(":")}" else " · local"),
+                            TextStyle.LABEL, t = t
+                        ), lp(MATCH, WRAP, marginTopDp = 2))
+                        layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(10) }
+                    }
+                    addView(info)
+                    StatusPill(this@RequestsActivity, media, r.status, t)?.let { pill ->
+                        addView(pill, LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(8) })
+                    }
+                    addView(CircleIconButton(this@RequestsActivity, "🗑", 0, t) {
+                        AppState.store.delete(r.id)
+                        Toast.makeText(this@RequestsActivity, "Request removed", Toast.LENGTH_SHORT).show()
+                        render()
+                    }, LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(8) })
                 }
-                row.addView(img, LinearLayout.LayoutParams(dp(40), dp(60)))
-                ImageLoader.load(media.posterUrl!!, img)
-            } else {
-                row.addView(PosterView(this, media), LinearLayout.LayoutParams(dp(40), dp(60)))
+                addView(rrow, lp(MATCH, WRAP))
             }
-            val info = Ui.vRow(this).apply {
-                val p = dp(10); setPadding(p, 0, 0, 0)
-            }
-            info.addView(Ui.textView(this, media.title, 13f, Ui.TEXT, bold = true))
-            info.addView(Ui.textView(
-                this,
-                "${media.type.label} · ${media.year} · requested ${Ui.formatTime(r.requestedAt)}" +
-                    (if (r.external.isNotBlank()) " · ${r.external.substringBefore(":")}" else " · local"),
-                11f, Ui.DIM
-            ).apply { val p = dp(2); setPadding(0, p, 0, 0) })
-            row.addView(info, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-
-            val pillText = when (r.status) {
-                RequestStatus.PENDING -> "⏳ Pending"
-                RequestStatus.PROCESSING -> "⚙ Processing"
-                RequestStatus.AVAILABLE -> "✓ Available"
-            }
-            row.addView(Ui.pill(this, pillText, Ui.statusColor(r.status) ?: Ui.GREEN).apply {
-                val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                lp.marginStart = dp(8)
-                layoutParams = lp
-            })
-            row.addView(Button(this).apply {
-                text = "Remove"
-                setTextColor(Color.WHITE)
-                background = pillBg(Ui.RED, 8)
-                setOnClickListener {
-                    AppState.store.delete(r.id)
-                    Toast.makeText(this@RequestsActivity, "Request removed", Toast.LENGTH_SHORT).show()
-                    render()
-                }
-                val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                lp.marginStart = dp(8)
-                layoutParams = lp
-            })
-            list.addView(row)
+            list.addView(card, list.lp(MATCH, WRAP, marginTopDp = if (i == 0) 0 else t.space.sm))
         }
+        list.staggerIn(stepMs = 30)
     }
 }

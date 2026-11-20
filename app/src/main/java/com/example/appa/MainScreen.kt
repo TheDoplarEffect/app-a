@@ -1,37 +1,25 @@
 package com.example.appa
 
 import android.app.Activity
-import android.content.Intent
-import android.graphics.Color
-import android.graphics.Typeface
 import android.os.Handler
 import android.os.Looper
-import android.text.Editable
-import android.text.TextWatcher
-import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
-import android.widget.Button
-import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.GridLayout
-import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
-import android.widget.TextView
 
 /**
- * Main screen: three tabs (Series / Movies / Audiobooks), a search field and a
- * poster grid. In live mode data comes from TMDB/Open Library + Jellyfin;
- * otherwise from the placeholder catalog. All layout is programmatic.
+ * Main screen (organism): aurora background + top app bar (requests badge,
+ * settings) + mode banner + search field + poster grid + bottom navigation
+ * with the three tabs (Series / Movies / Audiobooks). All atoms come from
+ * Components.kt; all values from AppTheme.
  */
 
 fun showMainScreen(activity: Activity) {
+    activity.edgeToEdge()
     MainScreen(activity).attach()
-}
-
-fun openDetail(activity: Activity, mediaId: String) {
-    activity.startActivity(Intent(activity, DetailActivity::class.java).putExtra("mediaId", mediaId))
 }
 
 class MainScreen(private val activity: Activity) {
@@ -40,31 +28,29 @@ class MainScreen(private val activity: Activity) {
     private var query = ""
     private var items: List<Media> = emptyList()
 
-    private lateinit var requestsBtn: Button
-    private lateinit var searchInput: EditText
+    private lateinit var search: SearchField
     private lateinit var grid: GridLayout
     private lateinit var scroll: ScrollView
-    private lateinit var empty: TextView
-    private lateinit var loading: TextView
-    private val tabButtons = mutableMapOf<MediaType, Button>()
+    private lateinit var emptyView: View
+    private lateinit var skeletonBox: GridLayout
+    private lateinit var content: FrameLayout
+    private lateinit var nav: BottomNavBar
+    private lateinit var topBar: LinearLayout
     private val handler = Handler(Looper.getMainLooper())
-    private var searchJob: Runnable? = null
     private var loadJob = 0
 
     private val ticker = object : Runnable {
         override fun run() {
             if (AppState.liveMode) {
-                // live: refresh statuses in background every 5s; local-only requests still tick
                 AppState.store.tick()
                 Thread {
                     runCatching { AppState.repo?.refreshStatuses(AppState.store) }
-                    handler.post { renderGrid(); renderRequestsCount() }
+                    handler.post { renderGrid(); renderRequestsBadge() }
                 }.start()
             } else {
-                val changed = AppState.store.tick()
-                if (changed.isNotEmpty()) {
+                if (AppState.store.tick().isNotEmpty()) {
                     renderGrid()
-                    renderRequestsCount()
+                    renderRequestsBadge()
                 }
             }
             handler.postDelayed(this, if (AppState.liveMode) 5000 else 1000)
@@ -73,132 +59,90 @@ class MainScreen(private val activity: Activity) {
 
     fun attach() {
         AppState.init(activity)
+        val t = AppTheme.current
 
-        val root = Ui.vRow(activity)
-        Ui.padded(root, 12)
-        root.setBackgroundColor(Color.WHITE)
+        val root = FrameLayout(activity).withAurora()
 
-        // ---- header ----
-        val header = Ui.hRow(activity).apply { gravity = Gravity.CENTER_VERTICAL }
-        header.addView(Ui.textView(activity, "🎬 MediaSeer (app-a)", 20f, Ui.TEXT, bold = true))
-        header.addView(View(activity), LinearLayout.LayoutParams(0, 1, 1f))
-        requestsBtn = Button(activity).apply {
-            text = "Requests"
-            setTextColor(Color.WHITE)
-            background = activity.pillBg(Ui.ACCENT, 10)
-            setOnClickListener {
-                activity.startActivity(Intent(activity, RequestsActivity::class.java))
+        val body = col(activity) {
+            padSystemBars(top = true, start = true, end = true, extraTopDp = t.space.sm)
+            val px = activity.dp(t.space.lg); setPadding(px, paddingTop, px, 0)
+
+            // top app bar — safely below status bar / pinhole thanks to padSystemBars
+            topBar = AppTopBar(
+                activity,
+                "MediaSeer",
+                subtitle = if (AppState.liveMode) "Live" else "Placeholder",
+                actions = listOf(
+                    TopBarAction("📥", badge = AppState.store.count()) { activity.openRisingTo(RequestsActivity::class.java) },
+                    TopBarAction("⚙") { activity.openRisingTo(SettingsActivity::class.java) }
+                )
+            )
+            addView(topBar, lp(MATCH, WRAP, marginTopDp = t.space.xs))
+
+            // mode banner
+            addView(ModeBanner(activity, AppState.liveMode, t), lp(WRAP, WRAP, marginTopDp = t.space.sm))
+
+            // search
+            search = SearchField(activity, if (AppState.liveMode) "Search TMDB / Open Library…" else "Search titles, genres, authors…") { q ->
+                query = q
+                loadItems()
             }
-        }
-        val settingsBtn = Button(activity).apply {
-            text = "⚙"
-            setTextColor(Ui.ACCENT)
-            background = activity.pillBg(Ui.CARD_BG, 10)
-            setOnClickListener {
-                activity.startActivity(Intent(activity, SettingsActivity::class.java))
-            }
-            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            lp.marginStart = activity.dp(6)
-            layoutParams = lp
-        }
-        header.addView(requestsBtn)
-        header.addView(settingsBtn)
-        root.addView(header, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+            addView(search.root, lp(MATCH, WRAP, marginTopDp = t.space.md))
 
-        // ---- mode banner ----
-        val banner = Ui.textView(
-            activity,
-            if (AppState.liveMode) "🌐 Live mode: TMDB + Sonarr/Radarr + Prowlarr + Jellyfin"
-            else "🧪 Placeholder mode — tap ⚙ to connect your services.",
-            11f, if (AppState.liveMode) Ui.GREEN else Ui.BANNER_TEXT
-        ).apply {
-            background = activity.pillBg(if (AppState.liveMode) 0xFFE6F4EA.toInt() else Ui.BANNER_BG, 6)
-            val p = activity.dp(8); setPadding(p, p, p, p)
-        }
-        root.addView(banner, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            topMargin = activity.dp(8)
-        })
+            // content: skeleton | grid | empty
+            content = FrameLayout(activity)
+            skeletonBox = GridLayout(activity).apply { columnCount = 3; useDefaultMargins = true }
+            scroll = ScrollView(activity)
+            grid = GridLayout(activity).apply { columnCount = 3; useDefaultMargins = true }
+            scroll.addView(grid)
+            emptyView = EmptyState(activity, "🔍", "Nothing here", "No titles match your search.")
+            content.addView(skeletonBox, FrameLayout.LayoutParams(MATCH, MATCH))
+            content.addView(scroll, FrameLayout.LayoutParams(MATCH, MATCH))
+            content.addView(emptyView, FrameLayout.LayoutParams(MATCH, MATCH))
+            addView(content, lp(MATCH, 0, weight = 1f, marginTopDp = t.space.md))
 
-        // ---- search ----
-        searchInput = EditText(activity).apply {
-            hint = if (AppState.liveMode) "Search TMDB / Open Library…" else "Search titles, genres, authors, magnets…"
-            setTextColor(Ui.TEXT)
-            setHintTextColor(Ui.DIM)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-            background = activity.pillBg(Ui.CARD_BG, 8)
-            val p = activity.dp(10); setPadding(p, p, p, p)
-            addTextChangedListener(object : TextWatcher {
-                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                    query = s?.toString() ?: ""
-                    searchJob?.let { handler.removeCallbacks(it) }
-                    searchJob = Runnable { loadItems() }
-                    handler.postDelayed(searchJob!!, 400)
-                }
-                override fun afterTextChanged(s: Editable?) {}
-            })
-        }
-        root.addView(searchInput, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            topMargin = activity.dp(10)
-        })
-
-        // ---- tabs (exactly three: series / movies / audiobooks) ----
-        val tabRow = Ui.hRow(activity).apply { gravity = Gravity.CENTER }
-        MediaType.entries.forEach { type ->
-            val b = Button(activity).apply {
-                text = when (type) {
-                    MediaType.SERIES -> "📺 Series"
-                    MediaType.MOVIES -> "🎥 Movies"
-                    MediaType.AUDIOBOOKS -> "🎧 Audiobooks"
-                }
-                setOnClickListener {
-                    currentTab = type
+            // bottom navigation (three tabs) — padded above the gesture nav bar
+            val navWrap = col(activity) {
+                padSystemBars(bottom = true, extraBottomDp = t.space.sm)
+                val m = activity.dp(t.space.md)
+                setPadding(m, 0, m, 0)
+                nav = BottomNavBar(
+                    activity,
+                    listOf(
+                        NavItem("📺", "Series"),
+                        NavItem("🎥", "Movies"),
+                        NavItem("🎧", "Audiobooks")
+                    ),
+                    initial = MediaType.entries.indexOf(currentTab)
+                ) { i ->
+                    currentTab = MediaType.entries[i]
                     query = ""
-                    searchInput.setText("")
-                    renderTabs()
+                    search.setTextSilently("")
                     loadItems()
                 }
+                addView(nav.root, lp(MATCH, WRAP))
             }
-            tabRow.addView(b, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginStart = activity.dp(4); marginEnd = activity.dp(4)
-            })
-            tabButtons[type] = b
+            addView(navWrap, lp(MATCH, WRAP))
         }
-        root.addView(tabRow, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            topMargin = activity.dp(8)
-        })
+        root.addView(body, FrameLayout.LayoutParams(MATCH, MATCH))
 
-        // ---- grid ----
-        loading = Ui.textView(activity, "Loading…", 13f, Ui.DIM).apply {
-            visibility = View.GONE; gravity = Gravity.CENTER
-        }
-        grid = GridLayout(activity).apply { columnCount = 3; useDefaultMargins = true }
-        scroll = ScrollView(activity).apply { addView(grid) }
-        empty = Ui.textView(activity, "No titles match your search.", 14f, Ui.DIM).apply {
-            visibility = View.GONE; gravity = Gravity.CENTER
-        }
-        val contentWrap = Ui.vRow(activity).apply {
-            addView(loading, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
-            addView(scroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
-            addView(empty, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
-        }
-        root.addView(contentWrap, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).apply {
-            topMargin = activity.dp(10)
-        })
-
-        renderTabs()
-        loadItems()
-        renderRequestsCount()
         activity.setContentView(root)
+
+        skeletonBox.removeAllViews()
+        repeat(9) { skeletonBox.addView(Skeleton(activity, 0, 150, t).apply {
+            layoutParams = GridLayout.LayoutParams().apply { width = 0; columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f) }
+        }) }
+
+        showLoading(true)
+        loadItems()
+        renderRequestsBadge()
         handler.postDelayed(ticker, 1000)
     }
 
-    private fun renderTabs() {
-        tabButtons.forEach { (type, b) ->
-            val active = type == currentTab
-            b.setTypeface(null, if (active) Typeface.BOLD else Typeface.NORMAL)
-            b.setTextColor(if (active) Ui.ACCENT else Ui.DIM)
-        }
+    private fun showLoading(loading: Boolean) {
+        skeletonBox.visibility = if (loading) View.VISIBLE else View.GONE
+        if (!loading) scroll.visibility = if (items.isEmpty()) View.GONE else View.VISIBLE
+        emptyView.visibility = if (!loading && items.isEmpty()) View.VISIBLE else View.GONE
     }
 
     private fun loadItems() {
@@ -206,9 +150,7 @@ class MainScreen(private val activity: Activity) {
         val live = AppState.liveMode
         val q = query
         if (live) {
-            loading.visibility = View.VISIBLE
-            scroll.visibility = View.GONE
-            empty.visibility = View.GONE
+            showLoading(true)
             Thread {
                 val result = runCatching {
                     if (q.isBlank()) AppState.repo!!.browse(currentTab)
@@ -216,84 +158,29 @@ class MainScreen(private val activity: Activity) {
                 }.getOrElse { emptyList() }
                 handler.post {
                     if (myJob != loadJob) return@post
-                    loading.visibility = View.GONE
                     AppState.repo?.remember(result)
                     items = result
+                    showLoading(false)
                     renderGrid()
                 }
             }.start()
         } else {
             items = if (q.isBlank()) AppState.catalog.ofType(currentTab) else AppState.catalog.search(q)
+            showLoading(false)
             renderGrid()
         }
     }
 
     private fun renderGrid() {
         grid.removeAllViews()
-        val isEmpty = items.isEmpty()
-        empty.visibility = if (isEmpty && loading.visibility != View.VISIBLE) View.VISIBLE else View.GONE
-        scroll.visibility = if (isEmpty) View.GONE else View.VISIBLE
         items.forEach { m ->
-            grid.addView(cardView(activity, m) { openDetail(activity, m.id) })
+            grid.addView(PosterCard(activity, m) { activity.openRisingTo(DetailActivity::class.java, "mediaId", m.id) })
         }
+        grid.staggerIn()
+        showLoading(false)
     }
 
-    private fun renderRequestsCount() {
-        val n = AppState.store.count()
-        requestsBtn.text = if (n > 0) "Requests ($n)" else "Requests"
+    private fun renderRequestsBadge() {
+        topBar.findViewWithTag<FrameLayout>("top_action_📥")?.setBadge(AppState.store.count())
     }
-}
-
-fun cardView(activity: Activity, m: Media, onClick: () -> Unit): View {
-    val col = Ui.vRow(activity)
-    col.layoutParams = GridLayout.LayoutParams().apply {
-        width = 0
-        columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f)
-    }
-
-    val frame = FrameLayout(activity)
-    if (m.posterUrl != null) {
-        val img = ImageView(activity).apply {
-            scaleType = ImageView.ScaleType.CENTER_CROP
-            adjustViewBounds = true
-            minimumHeight = activity.dp(150)
-        }
-        frame.addView(img, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
-        ImageLoader.load(m.posterUrl!!, img)
-    } else {
-        frame.addView(PosterView(activity, m), FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT))
-    }
-
-    val rating = Ui.textView(activity, "★ %.1f".format(m.rating), 10f, Color.WHITE, bold = true).apply {
-        background = activity.pillBg(0xAA000000.toInt(), 10)
-        gravity = Gravity.CENTER
-    }
-    frame.addView(rating, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
-        gravity = Gravity.TOP or Gravity.END
-        topMargin = activity.dp(4); marginEnd = activity.dp(4)
-    })
-
-    val status = AppState.requestFor(m.id)?.status
-    val label = Ui.statusLabel(m, status)
-    if (label != null) {
-        val badge = Ui.pill(activity, label, Ui.statusColor(status) ?: Ui.GREEN)
-        frame.addView(badge, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
-            gravity = Gravity.TOP or Gravity.START
-            topMargin = activity.dp(4); marginStart = activity.dp(4)
-        })
-    }
-
-    col.addView(frame, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-    col.addView(Ui.textView(activity, m.title, 12f, Ui.TEXT, bold = true).apply {
-        maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END
-    }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-        topMargin = activity.dp(4)
-    })
-    val sub = if (m.type == MediaType.AUDIOBOOKS && m.author != null) "${m.year} · ${m.author}" else "${m.year} · ${m.genres.joinToString(", ")}"
-    col.addView(Ui.textView(activity, sub, 10f, Ui.DIM).apply {
-        maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
-    })
-
-    col.setOnClickListener { onClick() }
-    return col
 }

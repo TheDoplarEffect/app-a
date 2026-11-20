@@ -35,3 +35,22 @@ app/src/test/java/...      # JVM unit tests for the pure core (./gradlew test)
 
 No XML layouts / no R class / no androidx deps — the UI is fully programmatic,
 which keeps the build dependency-light.
+
+## Design system (v4.0, "crystal glass")
+Atomic structure — swapping the design system later only means swapping tokens:
+
+- `Tokens.kt` (pure Kotlin, JVM-tested): ALL design values — colors, type scale,
+  spacing, radii, motion durations, elevation — in `DesignTokens` + `AppTheme.current`.
+  Two themes ship: `CrystalGlassDark` (default) and `PorcelainLight`.
+  WCAG contrast is unit-tested (AAA for primary text).
+- `Density.kt` / `Insets.kt` / `Motion.kt` / `Glass.kt` / `AuroraBackground.kt`:
+  platform glue — dp/sp, edge-to-edge + display-cutout safe-area padding,
+  animation helpers (stagger, pop, crossfade, activity transitions),
+  translucent glass surfaces, animated aurora backdrop.
+- `Components.kt`: the atoms — AppTopBar, BottomNavBar (animated pill),
+  PrimaryButton/SecondaryButton/DangerButton, CircleIconButton (badge),
+  SearchField (debounced), GlassCard, PosterCard, Chip/StatusPill,
+  Skeleton, EmptyState, MagnetRow, FormField/SwitchRow.
+  Each reads `AppTheme.current`; none hard-codes a value.
+- Screens (`MainScreen`, `DetailActivity`, `RequestsActivity`, `SettingsActivity`)
+  are organisms composed only from atoms.
