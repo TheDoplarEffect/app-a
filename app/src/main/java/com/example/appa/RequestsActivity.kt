@@ -21,6 +21,7 @@ class RequestsActivity : Activity() {
     private lateinit var staleLabel: android.widget.TextView
     private val dialogs = java.util.Collections.synchronizedList(mutableListOf<AlertDialog>())
     private val poller = StatusPoller { changed, failed ->
+        if (isFinishing || isDestroyed) return@StatusPoller // never touch views from a dead activity
         if (failed) staleLabel.text = "⚠ Last status refresh failed — showing cached statuses"
         else if (staleLabel.text.isNotEmpty()) staleLabel.text = ""
         if (changed || failed) render()
@@ -76,12 +77,13 @@ class RequestsActivity : Activity() {
     }
 
     override fun onDestroy() {
-        poller.cancel()
+        poller.stop()
         synchronized(dialogs) { dialogs.forEach { runCatching { it.dismiss() } }; dialogs.clear() }
         super.onDestroy()
     }
 
     private var lastSignature: String? = null
+    private var lastCount = -1 // stagger-animate only on first fill / count change, not every status tick
 
     private fun render() {
         if (isFinishing || isDestroyed) return
@@ -93,6 +95,8 @@ class RequestsActivity : Activity() {
         list.removeAllViews()
         val renderable = requests.mapNotNull { r -> AppState.mediaById(r.mediaId)?.let { m -> r to m } }
         countLabel.text = "${renderable.size} total"
+        val animate = lastCount != renderable.size
+        lastCount = renderable.size
         if (renderable.isEmpty()) {
             list.addView(EmptyState(this, "📥", "No requests yet", "Open a title and hit \"＋ Request\".", t))
             return
@@ -151,6 +155,6 @@ class RequestsActivity : Activity() {
             card.pressable() // press feedback on the card
             list.addView(card, list.lp(MATCH, WRAP, marginTopDp = if (i == 0) 0 else t.space.sm))
         }
-        if (list.childCount > 0) list.staggerIn(stepMs = 30) // animate only the initial fill, not every status tick
+        if (animate && list.childCount > 0) list.staggerIn(stepMs = 30) // animate only the initial fill / count change, not every status tick
     }
 }

@@ -210,3 +210,19 @@ fun compositeOver(fg: Int, bg: Int): Int {
     val b = (fg and 0xFF) * a + (bg and 0xFF) * (1 - a)
     return 0xFF000000.toInt() or ((r.toInt() shl 16) or (g.toInt() shl 8) or b.toInt())
 }
+
+/**
+ * Poster ink by the WORST gradient endpoint (WCAG AA on both ends).
+ * Returns (ink, needsScrim): mid-luminance pairs where neither ink passes get
+ * white ink plus a translucent scrim behind the text (see GradientPoster).
+ */
+fun posterInk(c1: Int, c2: Int): Pair<Int, Boolean> {
+    val l1 = luminance(c1); val l2 = luminance(c2)
+    val minL = minOf(l1, l2); val maxL = maxOf(l1, l2)
+    val white = 0xFFFFFFFF.toInt(); val dark = 0xFF101828.toInt()
+    return when {
+        maxL <= 0.1833 -> white to false
+        minL >= 0.2223 -> dark to false
+        else -> white to true
+    }
+}

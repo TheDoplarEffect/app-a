@@ -178,4 +178,24 @@ class DesignTokensTest {
             assertEquals(3, set.size)
         }
     }
+
+    private fun hex(c: String): Int = ("FF" + c.removePrefix("#")).toLong(16).toInt()
+
+    @Test
+    fun `gradient poster ink passes WCAG AA on every catalog gradient pair`() {
+        val scrimAlpha = 0.35f
+        for ((h1, h2) in Catalog.colorPairs) {
+            val c1 = hex(h1); val c2 = hex(h2)
+            val (ink, needScrim) = posterInk(c1, c2)
+            val scrim = if (ink == 0xFFFFFFFF.toInt()) 0xFF000000.toInt() else 0xFFFFFFFF.toInt()
+            for (end in listOf(c1, c2)) {
+                // worst case: text sits over the raw endpoint, or over the mid-zone scrim composite
+                val bg = if (needScrim) compositeOver(withAlpha(scrim, scrimAlpha), end) else end
+                val title = contrastRatio(ink, bg)
+                val label = contrastRatio(compositeOver(withAlpha(ink, 0.85f), bg), bg) // top label at 0.85 alpha
+                assertTrue("$h1->$h2 title contrast $title < 4.5", title >= 4.5)
+                assertTrue("$h1->$h2 label contrast $label < 4.5", label >= 4.5)
+            }
+        }
+    }
 }
