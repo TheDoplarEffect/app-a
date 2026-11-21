@@ -39,10 +39,15 @@ class MainScreen(private val activity: Activity) {
     private lateinit var pager: SwipePager
     private lateinit var nav: BottomNavBar
     private lateinit var topBar: LinearLayout
-    private lateinit var banner: android.widget.TextView
+    private lateinit var root: FrameLayout
+    private var menuPanel: LinearLayout? = null
+    private var menuScrim: View? = null
     private val handler = Handler(Looper.getMainLooper())
     private var loadJob = 0
     private var attached = true
+    private var page = 1          // infinite-scroll paging state
+    private var hasMore = true
+    private var loadingMore = false
     private var navInitiated = false
     private val startPoller = Runnable { poller.start() }
     private val poller = StatusPoller { changed, _ ->
@@ -75,7 +80,7 @@ class MainScreen(private val activity: Activity) {
         AppState.onConfigChanged = listener
         val t = AppTheme.current
 
-        val root = FrameLayout(activity).withAurora()
+        root = FrameLayout(activity).withAurora()
         val body = col(activity) {
             padSystemBars(top = true, start = true, end = true, extraTopDp = t.space.sm)
             val px = activity.dp(t.space.lg); setPadding(px, paddingTop, px, 0)
@@ -85,16 +90,10 @@ class MainScreen(private val activity: Activity) {
                 "MediaSeer",
                 subtitle = if (AppState.liveMode) "Live" else "Placeholder",
                 actions = listOf(
-                    TopBarAction("📥", badge = AppState.store.count(), contentDescription = "Requests") { activity.openRisingTo(RequestsActivity::class.java) },
-                    TopBarAction("⚙", contentDescription = "Settings") { activity.openRisingTo(SettingsActivity::class.java) }
+                    TopBarAction("☰", contentDescription = "Menu", iconKind = IconKind.MENU) { toggleMenu() }
                 )
             )
             addView(topBar, lp(MATCH, WRAP, marginTopDp = t.space.xs))
-
-            banner = ModeBanner(activity, AppState.liveMode, t)
-            banner.setOnClickListener { activity.openRisingTo(SettingsActivity::class.java) }
-            banner.pressable()
-            addView(banner, lp(WRAP, WRAP, marginTopDp = t.space.sm))
 
             search = SearchField(activity, searchHint(), t) { q ->
                 query = q
@@ -128,7 +127,7 @@ class MainScreen(private val activity: Activity) {
                 setPadding(m, 0, m, 0)
                 nav = BottomNavBar(
                     activity,
-                    listOf(NavItem("📺", "Series"), NavItem("🎥", "Movies"), NavItem("🎧", "Audiobooks")),
+                    listOf(NavItem(IconKind.SERIES, "Series"), NavItem(IconKind.MOVIES, "Movies"), NavItem(IconKind.AUDIOBOOKS, "Audiobooks")),
                     initial = MediaType.entries.indexOf(currentTab),
                     t
                 ) { i -> navInitiated = true; if (i != pager.current) pager.goToPage(i) } // recursion guard
@@ -169,6 +168,7 @@ class MainScreen(private val activity: Activity) {
         attached = false
         handler.removeCallbacks(startPoller)
         poller.stop()
+        closeMenu()
         // no WorkerScope.cancelAll(): it interrupts OTHER screens' in-flight workers process-wide
         if (AppState.onConfigChanged === configListener) AppState.onConfigChanged = null // CAS: rotation must not null the new screen's listener
         configListener = null
@@ -188,16 +188,7 @@ class MainScreen(private val activity: Activity) {
         if (!::topBar.isInitialized) return
         val t = AppTheme.current
         topBar.setSubtitle(if (AppState.liveMode) "Live" else "Placeholder")
-        if (::banner.isInitialized) {
-            val live = AppState.liveMode
-            val (text, color) = if (live)
-                "🌐 Live — TMDB · Sonarr/Radarr · Prowlarr · Jellyfin" to t.colors.success
-            else
-                "🧪 Placeholder mode — tap to connect your services in Settings" to t.colors.warning
-            banner.text = text
-            banner.restyleChip(color, t)
-            banner.contentDescription = if (live) "Live mode active. Tap to open settings." else "Placeholder mode. Tap to open settings."
-        }
+        closeMenu() // mode may have flipped — the menu shows the old status otherwise
         if (::search.isInitialized) search.input.hint = searchHint()
         renderRequestsBadge()
     }
@@ -217,7 +208,15 @@ class MainScreen(private val activity: Activity) {
             })
         }
         val grid = GridLayout(activity).apply { columnCount = GRID_COLUMNS; useDefaultMargins = true }
-        val scroll = ScrollView(activity).apply { addView(grid) }
+        val scroll = ScrollView(activity).apply {
+            addView(grid)
+            // infinite scroll: nearing the bottom of the list fetches the next page
+            viewTreeObserver.addOnScrollChangedListener {
+                if (!attached || loadingMore || !hasMore) return@addOnScrollChangedListener
+                val child = getChildAt(0) ?: return@addOnScrollChangedListener
+                if (child.height - height - scrollY <= activity.dp(64)) loadMore()
+            }
+        }
         val empty = EmptyState(activity, "🔍", "Nothing here", "", t)
         val root = FrameLayout(activity)
         root.addView(skeleton, FrameLayout.LayoutParams(MATCH, MATCH))
@@ -264,34 +263,42 @@ class MainScreen(private val activity: Activity) {
         signatures.entries.removeAll { !cache.containsKey(it.key) }
     }
 
-    private fun loadItems() {
+    private fun loadItems(append: Boolean = false) {
+        if (!append) { page = 1; hasMore = true } // fresh tab/query: restart paging
         val myJob = ++loadJob
         val live = AppState.liveMode
         val q = query
         val tab = currentTab
         val p = pages[tab] ?: return
         val key = cacheKey(tab, q)
+        val pageNum = page
+        val hadCache = cache.containsKey(key)
         val now = System.currentTimeMillis()
         evictCache()
 
         if (!live) {
-            val all = if (q.isBlank()) Catalog.ofType(tab) else Catalog.search(q)
-            val hadCache = cache.containsKey(key)
-            cache[key] = now to all.filter { q.isBlank() || it.type == tab }
-            renderCurrent(animate = !hadCache)
+            val fetched = if (q.isBlank()) Catalog.browsePage(tab, pageNum) else Catalog.searchPage(q, tab, pageNum)
+            val merged = if (append) (cache[key]?.second.orEmpty() + fetched).distinctBy { it.id } else fetched
+            cache[key] = now to merged
+            hasMore = fetched.isNotEmpty() // the placeholder catalog is endless
+            loadingMore = false
+            renderCurrent(animate = !append && !hadCache)
             return
         }
 
-        val cached = cache[key]
-        val animateFirst = cached == null
-        if (cached != null) {
-            renderCurrent(animate = false) // stale-while-revalidate: show instantly
-            if (now - cached.first < CACHE_TTL_MS) return // still fresh, no fetch
-            showLoading(p, loading = true, hasItems = true)
+        if (!append) {
+            val cached = cache[key]
+            if (cached != null) {
+                renderCurrent(animate = false) // stale-while-revalidate: show instantly
+                if (now - cached.first < CACHE_TTL_MS) return // still fresh, no fetch
+                showLoading(p, loading = true, hasItems = true)
+            } else {
+                clearError(p)
+                val hasItems = p.grid.childCount > 0 // keep previous results visible during search
+                showLoading(p, loading = true, hasItems = hasItems)
+            }
         } else {
-            clearError(p)
-            val hasItems = p.grid.childCount > 0 // keep previous results visible during search
-            showLoading(p, loading = true, hasItems = hasItems)
+            showLoading(p, loading = true, hasItems = true) // keep loaded pages visible while fetching more
         }
         spawnWorker {
             val repo = AppState.repo
@@ -299,25 +306,89 @@ class MainScreen(private val activity: Activity) {
             val result = if (repo == null) {
                 Result.failure(ApiException("Live mode off"))
             } else runCatching {
-                val raw = if (q.isBlank()) repo.browse(tab) else repo.search(q)
+                val raw = if (q.isBlank()) repo.browse(tab, pageNum) else repo.search(q, pageNum)
                 raw.filter { it.type == tab }
             }
             handler.post {
                 if (myJob != loadJob || !attached) return@post
-                val items = result.getOrElse { null }
-                if (items == null) {
-                    val stale = cache[key]?.second
+                loadingMore = false
+                val fetched = result.getOrElse { null }
+                if (fetched == null) {
+                    val stale = cache[key]?.second // keep hasMore: a transient error must not end scrolling
                     if (!stale.isNullOrEmpty()) showInlineError(p, result.exceptionOrNull())
                     else showError(p, result.exceptionOrNull())
                     return@post
                 }
                 clearError(p)
-                AppState.repo?.remember(items)
-                cache[key] = System.currentTimeMillis() to items
-                renderCurrent(animate = animateFirst)
+                AppState.repo?.remember(fetched)
+                hasMore = fetched.size >= LIVE_PAGE_SIZE // a short page means the source is exhausted
+                val merged = if (append) (cache[key]?.second.orEmpty() + fetched).distinctBy { it.id } else fetched
+                cache[key] = System.currentTimeMillis() to merged
+                renderCurrent(animate = !append && !hadCache)
             }
         }
     }
+
+    /** Infinite scroll entry point: fetch the next page and append it to the grid. */
+    private fun loadMore() {
+        if (!hasMore || loadingMore) return
+        loadingMore = true
+        page++
+        loadItems(append = true)
+    }
+
+    // ---------- hamburger menu (live status / requests / settings) ----------
+
+    private fun toggleMenu() { if (menuPanel != null) closeMenu() else openMenu() }
+
+    private fun openMenu() {
+        val t = AppTheme.current
+        val scrim = View(activity).apply { setOnClickListener { closeMenu() } } // tap outside closes
+        val n = AppState.store.count()
+        val panel = col(activity) {
+            glass(t.radius.card, strong = true, t = t)
+            val pad = activity.dp(t.space.md); setPadding(pad, pad, pad, pad)
+            val status = ModeBanner(activity, AppState.liveMode, t)
+            status.setOnClickListener { closeMenu(); activity.openRisingTo(SettingsActivity::class.java) }
+            status.pressable()
+            status.contentDescription = if (AppState.liveMode) "Live mode active. Tap to open settings." else "Placeholder mode. Tap to open settings."
+            addView(status, lp(MATCH, WRAP))
+            addView(menuRow(IconKind.INBOX, "Requests", badge = n, t) { closeMenu(); activity.openRisingTo(RequestsActivity::class.java) },
+                lp(MATCH, WRAP, marginTopDp = t.space.sm))
+            addView(menuRow(IconKind.GEAR, "Settings", t = t) { closeMenu(); activity.openRisingTo(SettingsActivity::class.java) },
+                lp(MATCH, WRAP, marginTopDp = t.space.sm))
+        }
+        root.addView(scrim, FrameLayout.LayoutParams(MATCH, MATCH))
+        root.addView(panel, FrameLayout.LayoutParams(WRAP, WRAP, android.view.Gravity.TOP or android.view.Gravity.END).apply {
+            topMargin = topBar.bottom + activity.dp(8)
+            marginEnd = activity.dp(t.space.lg)
+        })
+        panel.alpha = 0f
+        panel.animate().alpha(1f).setDuration(t.motion.shortMs).setInterpolator(FastOutSlowIn).start()
+        menuScrim = scrim
+        menuPanel = panel
+    }
+
+    private fun closeMenu() {
+        menuScrim?.let { root.removeView(it) }
+        menuPanel?.let { root.removeView(it) }
+        menuScrim = null
+        menuPanel = null
+    }
+
+    private fun menuRow(kind: IconKind, label: String, badge: Int = 0, t: DesignTokens, onClick: () -> Unit): LinearLayout =
+        row(activity) {
+            gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = activity.dp(48)
+            addView(IconView(activity, kind, 22, t.colors.textPrimary))
+            addView(AppText(activity, label, TextStyle.BODY, t = t), lp(0, WRAP, 1f, marginStartDp = 12))
+            addView(Chip(activity, badge.toString(), withAlpha(t.colors.error, 0.30f), fg = t.colors.error, t = t).apply {
+                tag = "menu_badge"
+                visibility = if (badge > 0) View.VISIBLE else View.GONE
+            }, lp(WRAP, WRAP))
+            setOnClickListener { onClick() }
+            pressable()
+        }
 
     private fun showError(p: Page, error: Throwable?) {
         clearError(p) // single error view — never stack overlays
@@ -380,7 +451,11 @@ class MainScreen(private val activity: Activity) {
     }
 
     private fun renderRequestsBadge() {
-        if (::topBar.isInitialized) topBar.findViewWithTag<FrameLayout>("top_action_📥")?.setBadge(AppState.store.count())
+        val n = AppState.store.count()
+        menuPanel?.findViewWithTag<android.widget.TextView>("menu_badge")?.apply {
+            text = n.toString()
+            visibility = if (n > 0) View.VISIBLE else View.GONE
+        }
     }
 
     private companion object {
@@ -388,6 +463,7 @@ class MainScreen(private val activity: Activity) {
         const val CACHE_TTL_MS = 45_000L
         const val CACHE_MAX_AGE_MS = 5 * 60_000L
         const val CACHE_MAX_ENTRIES = 24
+        const val LIVE_PAGE_SIZE = 20 // TMDB/OpenLibrary page size — a short page ends infinite scroll
         // process-level: survives activity recreation (rotation)
         val cache = mutableMapOf<String, Pair<Long, List<Media>>>()      // key "tab|query" -> (fetchedAt, items)
         val signatures = mutableMapOf<String, String>()                    // key -> grid signature

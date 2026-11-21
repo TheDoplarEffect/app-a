@@ -297,6 +297,30 @@ object Catalog {
     fun ofType(type: MediaType): List<Media> =
         all.filter { it.type == type }.sortedWith(compareByDescending<Media> { it.rating }.thenBy { it.title })
 
+    const val PAGE_SIZE = 18
+
+    private fun typeLabel(type: MediaType) = when (type) {
+        MediaType.SERIES -> "Series"
+        MediaType.MOVIES -> "Movie"
+        MediaType.AUDIOBOOKS -> "Audiobook"
+    }
+
+    /** Endless paged browse for placeholder mode: page N generates items 1..N*PAGE_SIZE (seeded, stable). */
+    fun browsePage(type: MediaType, page: Int): List<Media> {
+        val p = page.coerceAtLeast(1)
+        val upTo = p * PAGE_SIZE
+        val sorted = (1..upTo).map { buildOne(type, typeLabel(type), it) }
+            .sortedWith(compareByDescending<Media> { it.rating }.thenBy { it.title })
+        return sorted.drop((p - 1) * PAGE_SIZE).take(PAGE_SIZE)
+    }
+
+    /** Paged search for placeholder mode. */
+    fun searchPage(query: String, type: MediaType, page: Int): List<Media> {
+        val p = page.coerceAtLeast(1)
+        val matches = search(query).filter { it.type == type }
+        return matches.drop((p - 1) * PAGE_SIZE).take(PAGE_SIZE)
+    }
+
     /** Matches title, genres, author, narrator or any magnet name of the item. */
     fun search(query: String): List<Media> {
         val q = query.trim().lowercase()
@@ -311,7 +335,10 @@ object Catalog {
     }
 
     private fun buildType(type: MediaType, label: String, count: Int): List<Media> =
-        (1..count).map { i ->
+        (1..count).map { i -> buildOne(type, label, i) }
+
+    private fun buildOne(type: MediaType, label: String, i: Int): Media {
+        run {
             val seed = Random("${type.slug}-$i".hashCode().toLong())
             val title = "Placeholder $label ${"%02d".format(i)}"
             val id = "${type.slug}-${"%02d".format(i)}"
@@ -339,6 +366,7 @@ object Catalog {
                 available = i % 6 == 0
             )
         }
+    }
 
     private fun magnetsFor(m: Media): List<Magnet> {
         val rnd = Random(("magnets:" + m.id).hashCode().toLong())

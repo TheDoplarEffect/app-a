@@ -12,12 +12,25 @@ import android.view.View
 import android.view.animation.LinearInterpolator
 
 /**
- * Animated aurora backdrop: the screen base color plus three slowly drifting
- * colored blobs, rendered at low resolution into an offscreen bitmap and
- * upscaled bilinearly (cheap, smooth, no per-frame full-res gradients).
+ * Animated SPACE backdrop: the screen base color, three slowly drifting nebula
+ * blobs (low-res offscreen bitmap, upscaled bilinearly) plus a seeded starfield
+ * with twinkling stars drawn at full resolution — the stars shining through the
+ * translucent glass surfaces make the liquid-glass effect visible.
  * Colors come from the active theme's tokens.
  */
 class AuroraBackground(context: Context) : View(context) {
+
+    private data class Star(val fx: Float, val fy: Float, val rDp: Float, val phase: Float, val speed: Float, val bright: Float)
+
+    /** Seeded once — the sky is identical on every launch and rotation. */
+    private val stars: List<Star> = run {
+        val rnd = java.util.Random(1337)
+        List(170) {
+            Star(rnd.nextFloat(), rnd.nextFloat(), 0.5f + rnd.nextFloat() * 1.3f,
+                rnd.nextFloat() * 6.283f, 0.25f + rnd.nextFloat() * 0.9f, 0.30f + rnd.nextFloat() * 0.70f)
+        }
+    }
+    private val starPaint = Paint(Paint.ANTI_ALIAS_FLAG)
 
     private val blobPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         isAntiAlias = true
@@ -92,6 +105,16 @@ class AuroraBackground(context: Context) : View(context) {
             isFilterBitmap = true
             shader = null
         })
+
+        // starfield on top, twinkling with the animation phase (static under reduced motion)
+        val tw = t
+        val density = resources.displayMetrics.density
+        for (s in stars) {
+            val twinkle = 0.55f + 0.45f * kotlin.math.sin(6.283f * (tw * s.speed + s.phase))
+            val a = (s.bright * twinkle).coerceIn(0f, 1f)
+            starPaint.color = withAlpha(0xFFE9EDFF.toInt(), a)
+            canvas.drawCircle(s.fx * width, s.fy * height, s.rDp * density, starPaint)
+        }
     }
 
     private fun drawBlob(canvas: Canvas, w: Float, h: Float, color: Int, fx: Float, fy: Float, rFrac: Float) {

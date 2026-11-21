@@ -102,7 +102,7 @@ fun View.pressable(): View {
 
 // ------------------------------------------------------------------ top bar
 
-data class TopBarAction(val icon: String, val contentDescription: String = icon, var badge: Int = 0, val onClick: () -> Unit)
+data class TopBarAction(val icon: String, val contentDescription: String = icon, var badge: Int = 0, val onClick: () -> Unit, val iconKind: IconKind? = null)
 
 /**
  * Top app bar atom: large title + optional subtitle on the left, circular
@@ -125,7 +125,7 @@ fun AppTopBar(
             layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = ctx.dp(if (leading != null) 12 else 0) }
         }
         actions.forEach { a ->
-            addView(CircleIconButton(ctx, a.icon, a.badge, t, a.contentDescription, a.onClick).apply { tag = "top_action_${a.icon}" }, lp(WRAP, WRAP, marginStartDp = 8))
+            addView(CircleIconButton(ctx, a.icon, a.badge, t, a.contentDescription, a.onClick, a.iconKind).apply { tag = "top_action_${a.icon}" }, lp(WRAP, WRAP, marginStartDp = 8))
         }
     }.let { addView(it, lp(MATCH, WRAP)) }
 }
@@ -144,13 +144,19 @@ fun CircleIconButton(
     badge: Int = 0,
     t: DesignTokens = AppTheme.current,
     contentDescription: String = icon,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    iconKind: IconKind? = null
 ): FrameLayout {
     val size = ctx.dp(48) // M3 minimum touch target
     return FrameLayout(ctx).apply {
         glass(t.radius.pill, t = t)
-        addView(AppText(ctx, icon, TextStyle.TITLE, t = t).apply { gravity = Gravity.CENTER },
-            FrameLayout.LayoutParams(size, size, Gravity.CENTER))
+        if (iconKind != null) {
+            addView(IconView(ctx, iconKind, 22, t.colors.textPrimary).apply { gravity = Gravity.CENTER },
+                FrameLayout.LayoutParams(size, size, Gravity.CENTER))
+        } else {
+            addView(AppText(ctx, icon, TextStyle.TITLE, t = t).apply { gravity = Gravity.CENTER },
+                FrameLayout.LayoutParams(size, size, Gravity.CENTER))
+        }
         if (badge > 0) {
             addView(Chip(ctx, badge.toString(), withAlpha(t.colors.error, 0.30f), fg = t.colors.error, t = t).apply { tag = "badge" },
                 FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.END).apply {
@@ -231,7 +237,7 @@ fun DangerButton(ctx: Context, label: String, t: DesignTokens = AppTheme.current
 
 // ------------------------------------------------------------------ bottom nav
 
-data class NavItem(val icon: String, val label: String)
+data class NavItem(val icon: IconKind, val label: String)
 
 /**
  * Bottom navigation atom with an animated active-pill indicator (Material 3
@@ -241,7 +247,8 @@ class BottomNavBar(private val ctx: Context, val items: List<NavItem>, initial: 
     val root: LinearLayout = row(ctx) { gravity = Gravity.CENTER }
     private val cells = mutableListOf<FrameLayout>()
     private val pills = mutableListOf<View>()
-    private val icons = mutableListOf<TextView>()
+    private val tints = mutableListOf<View>()
+    private val icons = mutableListOf<IconView>()
     private val labels = mutableListOf<TextView>()
     var selected = -1 // unset until the initial post runs, so the first select() always fires onSelect
         private set
@@ -258,13 +265,23 @@ class BottomNavBar(private val ctx: Context, val items: List<NavItem>, initial: 
         val p = ctx.dp(6); root.setPadding(p, p, p, p)
         items.forEachIndexed { i, item ->
             // pill sits BEHIND the label inside the same cell -> always centered
+            // selected indicator = frosted GLASS pill with a faint accent sheen BEHIND the icon,
+            // not a solid purple block on top of it
             val pill = View(ctx).apply {
-                background = ctx.accentGradient(t.radius.pill, t)
+                glass(t.radius.pill, strong = true, t = t)
                 scaleX = 0f
                 alpha = 0f
                 elevation = ctx.dpF(t.elevation.level1Dp)
             }
-            val icon = AppText(ctx, item.icon, TextStyle.TITLE, t = t)
+            val tint = View(ctx).apply {
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(withAlpha(t.colors.accentSolid, 0.16f))
+                    cornerRadius = ctx.dp(t.radius.pill).toFloat() // match the glass pill's rounding
+                }
+                scaleX = 0f
+                alpha = 0f
+            }
+            val icon = IconView(ctx, item.icon, 24, t.colors.textSecondary)
             val label = AppText(ctx, item.label, TextStyle.LABEL, t = t)
             val labelCol = col(ctx) {
                 gravity = Gravity.CENTER
@@ -275,13 +292,14 @@ class BottomNavBar(private val ctx: Context, val items: List<NavItem>, initial: 
                 val pad = ctx.dp(8)
                 labelCol.setPadding(pad, pad, pad, pad)
                 addView(pill, FrameLayout.LayoutParams(MATCH, ctx.dp(48), Gravity.CENTER))
+                addView(tint, FrameLayout.LayoutParams(MATCH, ctx.dp(48), Gravity.CENTER))
                 addView(labelCol, FrameLayout.LayoutParams(WRAP, WRAP, Gravity.CENTER))
                 setOnClickListener { select(i) }
                 pressable()
                 contentDescription = item.label
             }
             root.addView(cell, LinearLayout.LayoutParams(0, WRAP, 1f))
-            cells.add(cell); pills.add(pill); icons.add(icon); labels.add(label)
+            cells.add(cell); pills.add(pill); tints.add(tint); icons.add(icon); labels.add(label)
         }
         root.post { initialized = true; select(initial, animate = false) } // flag FIRST: breaks the select<->goToPage recursion
     }
@@ -294,16 +312,23 @@ class BottomNavBar(private val ctx: Context, val items: List<NavItem>, initial: 
         cells.forEachIndexed { idx, _ ->
             val active = idx == i
             val pill = pills[idx]
-            icons[idx].setTextColor(if (active) c.textOnAccent else c.textSecondary)
-            labels[idx].setTextColor(if (active) c.textOnAccent else c.textSecondary)
+            val tint = tints[idx]
+            icons[idx].setColor(if (active) c.accentText else c.textSecondary)
+            labels[idx].setTextColor(if (active) c.accentText else c.textSecondary)
             if (animate) {
                 pill.animate().scaleX(if (active) 1f else 0f).alpha(if (active) 1f else 0f)
+                    .setDuration(if (active) m.mediumMs else m.shortMs)
+                    .setInterpolator(if (active) EmphasizedOvershoot else FastOutSlowIn)
+                    .start()
+                tint.animate().scaleX(if (active) 1f else 0f).alpha(if (active) 1f else 0f)
                     .setDuration(if (active) m.mediumMs else m.shortMs)
                     .setInterpolator(if (active) EmphasizedOvershoot else FastOutSlowIn)
                     .start()
             } else {
                 pill.scaleX = if (active) 1f else 0f
                 pill.alpha = if (active) 1f else 0f
+                tint.scaleX = if (active) 1f else 0f
+                tint.alpha = if (active) 1f else 0f
             }
         }
         onSelect(i)
