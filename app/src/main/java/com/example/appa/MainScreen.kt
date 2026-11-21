@@ -378,7 +378,7 @@ class MainScreen(private val activity: Activity) {
 
     private fun menuRow(kind: IconKind, label: String, badge: Int = 0, t: DesignTokens, onClick: () -> Unit): LinearLayout =
         row(activity) {
-            gravity = Gravity.CENTER_VERTICAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
             minimumHeight = activity.dp(48)
             addView(IconView(activity, kind, 22, t.colors.textPrimary))
             addView(AppText(activity, label, TextStyle.BODY, t = t), lp(0, WRAP, 1f, marginStartDp = 12))

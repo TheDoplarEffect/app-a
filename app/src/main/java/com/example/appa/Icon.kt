@@ -60,7 +60,7 @@ class IconView(ctx: Context, val kind: IconKind, sizeDp: Int = 24, color: Int = 
                 p.reset(); p.moveTo(18.5f, 4.6f); p.lineTo(16.8f, 8.6f); c.drawPath(p, stroke)
             }
             IconKind.AUDIOBOOKS -> { // headphones
-                p.reset(); p.moveTo(5f, 16f); p.arcTo(5f, 7f, 19f, 17f, 180f, 180f, false); c.drawPath(p, stroke)
+                p.reset(); p.moveTo(5f, 16f); p.arcTo(android.graphics.RectF(5f, 7f, 19f, 17f), 180f, 180f, false); c.drawPath(p, stroke)
                 p.reset(); p.addRoundRect(3.5f, 14f, 7.5f, 20f, 2f, 2f, Path.Direction.CW); c.drawPath(p, stroke)
                 p.reset(); p.addRoundRect(16.5f, 14f, 20.5f, 20f, 2f, 2f, Path.Direction.CW); c.drawPath(p, stroke)
             }
