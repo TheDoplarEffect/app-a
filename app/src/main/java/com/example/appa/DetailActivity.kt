@@ -16,7 +16,6 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import java.util.Collections
 
 /**
  * Detail screen (organism). Hero poster + glass meta card + request action +
@@ -33,8 +32,7 @@ class DetailActivity : Activity() {
     private lateinit var actionsRow: LinearLayout
     private lateinit var currentMedia: Media
     private val handler = Handler(Looper.getMainLooper())
-    private val dialogs = Collections.synchronizedList(mutableListOf<AlertDialog>())
-    private val workers = Collections.synchronizedList(mutableListOf<Thread>())
+    private val dialogs = java.util.Collections.synchronizedList(mutableListOf<AlertDialog>())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -42,7 +40,10 @@ class DetailActivity : Activity() {
         AppState.init(this)
         val t = AppTheme.current
         val mediaId = intent.getStringExtra("mediaId") ?: run { finishDropping(); return }
-        val media = AppState.mediaById(mediaId) ?: run { finishDropping(); return }
+        val media = AppState.mediaById(mediaId) ?: run {
+            Toast.makeText(this, "This title is no longer available", Toast.LENGTH_SHORT).show()
+            finishDropping(); return
+        }
         currentMedia = media
 
         val root = FrameLayout(this).withAurora()
@@ -91,18 +92,19 @@ class DetailActivity : Activity() {
         setContentView(root)
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (::actionsRow.isInitialized) renderActions(currentMedia, AppTheme.current)
+    }
+
     override fun onDestroy() {
         // no window leaks: dismiss dialogs; no thread leaks: interrupt workers
         synchronized(dialogs) { dialogs.forEach { runCatching { it.dismiss() } }; dialogs.clear() }
-        synchronized(workers) { workers.forEach { it.interrupt() }; workers.clear() }
+        WorkerScope.cancelAll()
         super.onDestroy()
     }
 
-    private fun spawnWorker(block: () -> Unit) {
-        val th = Thread(block)
-        workers.add(th)
-        th.start()
-    }
+    private fun spawnWorker(block: () -> Unit) = WorkerScope.spawn(block)
 
     private fun showDialog(builder: AlertDialog.Builder) {
         val d = builder.show()
@@ -219,6 +221,11 @@ class DetailActivity : Activity() {
         btn.isEnabled = false
         btn.text = "Requesting…"
         val snapshot = MediaSnapshot.of(media).toJson()
+        if (AppState.requestFor(media.id) != null) { // check FIRST — never double-add in *arr
+            Toast.makeText(this, "Already requested", Toast.LENGTH_SHORT).show()
+            renderActions(media, AppTheme.current)
+            return
+        }
         if (AppState.liveMode) {
             spawnWorker {
                 val result = runCatching {
@@ -295,7 +302,7 @@ class DetailActivity : Activity() {
             val res = runCatching {
                 val uri = if (AppState.liveMode) AppState.repo?.resolveMagnet(mag) ?: "" else mag.magnetUri
                 // only a real magnet/torrent link is ever copied — never the apikey-bearing download URL
-                if (uri.startsWith("magnet:", ignoreCase = true) || uri.contains(".torrent")) uri
+                if (uri.startsWith("magnet:", ignoreCase = true)) uri
                 else throw ApiException("Indexer did not return a magnet link")
             }
             handler.post {

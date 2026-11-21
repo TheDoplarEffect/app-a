@@ -15,16 +15,6 @@ import android.view.View
  * [luminance] helper. All values from tokens.
  */
 
-fun glassDrawable(context: Context, radiusDp: Int, strong: Boolean = false, t: DesignTokens = AppTheme.current): GradientDrawable {
-    val c = t.colors
-    return GradientDrawable().apply {
-        shape = GradientDrawable.RECTANGLE
-        cornerRadius = context.dp(radiusDp).toFloat()
-        setColor(if (strong) c.surfaceGlassStrong else c.surfaceGlass)
-        setStroke(context.dp(1), c.glassBorder)
-    }
-}
-
 /** Full liquid-glass layer list: gradient border + inset translucent fill + sheen. */
 fun glassLayered(context: Context, radiusDp: Int, strong: Boolean = false, t: DesignTokens = AppTheme.current): Drawable {
     val r = context.dp(radiusDp).toFloat()

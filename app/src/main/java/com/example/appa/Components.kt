@@ -121,13 +121,18 @@ fun AppTopBar(
         if (leading != null) addView(CircleIconButton(ctx, leading.icon, 0, t, leading.contentDescription, leading.onClick), lp(WRAP, WRAP, marginStartDp = 0))
         col(ctx) {
             addView(AppText(ctx, title, TextStyle.HEADLINE, t = t))
-            if (subtitle != null) addView(AppText(ctx, subtitle, TextStyle.LABEL, t = t))
+            if (subtitle != null) addView(AppText(ctx, subtitle, TextStyle.LABEL, t = t).apply { tag = "subtitle" })
             layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = ctx.dp(if (leading != null) 12 else 0) }
         }
         actions.forEach { a ->
             addView(CircleIconButton(ctx, a.icon, a.badge, t, a.contentDescription, a.onClick).apply { tag = "top_action_${a.icon}" }, lp(WRAP, WRAP, marginStartDp = 8))
         }
     }.let { addView(it, lp(MATCH, WRAP)) }
+}
+
+/** Update the top-bar subtitle without child-index casts. */
+fun LinearLayout.setSubtitle(text: String) {
+    findViewWithTag<android.widget.TextView>("subtitle")?.text = text
 }
 
 // ------------------------------------------------------------------ circle icon button
@@ -152,7 +157,7 @@ fun CircleIconButton(
                     topMargin = ctx.dp(2); marginEnd = ctx.dp(2)
                 })
         }
-        this.contentDescription = contentDescription
+        this.contentDescription = if (badge > 0) "$contentDescription, $badge" else contentDescription
         setOnClickListener { onClick() }
         pressable()
     }
@@ -160,6 +165,8 @@ fun CircleIconButton(
 
 /** Update the count badge of a [CircleIconButton] (tagged "badge" child). */
 fun FrameLayout.setBadge(n: Int, t: DesignTokens = AppTheme.current) {
+    val base = contentDescription?.toString()?.replace(Regex(", \\d+$"), "") ?: ""
+    contentDescription = if (n > 0) "$base, $n" else base
     val existing = findViewWithTag<TextView>("badge")
     when {
         n > 0 && existing == null -> addView(
@@ -241,11 +248,11 @@ class BottomNavBar(private val ctx: Context, val items: List<NavItem>, initial: 
     private var initialized = false
 
     init {
-        root.glass(t.radius.card, strong = true, t = t)
+        root.glass(t.radius.navBar, strong = true, t = t)
         root.clipToOutline = true
         root.outlineProvider = object : ViewOutlineProvider() {
             override fun getOutline(view: View, outline: Outline) {
-                outline.setRoundRect(0, 0, view.width, view.height, ctx.dp(t.radius.card).toFloat())
+                outline.setRoundRect(0, 0, view.width, view.height, ctx.dp(t.radius.navBar).toFloat())
             }
         }
         val p = ctx.dp(6); root.setPadding(p, p, p, p)
@@ -393,11 +400,17 @@ fun statusLabelOf(media: Media, status: RequestStatus?): String? = when {
     else -> null
 }
 
+/** The actual pill background: status tint composited over the glass surface over the screen bg. */
+fun statusPillBg(color: Int, t: DesignTokens): Int {
+    val glass = compositeOver(t.colors.surfaceGlassStrong, t.colors.background)
+    return compositeOver(withAlpha(color, 0.28f), glass)
+}
+
 fun StatusPill(ctx: Context, media: Media, status: RequestStatus?, t: DesignTokens = AppTheme.current): TextView? {
     val label = statusLabelOf(media, status) ?: return null
     val color = statusColorOf(status, media.available, t)
-    // tinted background + colored text: passes WCAG contrast on dark and light themes
-    return Chip(ctx, label, withAlpha(color, 0.22f), fg = color, t = t)
+    // tinted background + colored text: passes WCAG AA on the real composited pill background
+    return Chip(ctx, label, statusPillBg(color, t), fg = color, t = t)
 }
 
 // ------------------------------------------------------------------ glass card
@@ -415,24 +428,44 @@ fun GlassCard(ctx: Context, padDp: Int = 16, strong: Boolean = false, t: DesignT
 
 // ------------------------------------------------------------------ poster card
 
-/** Gradient placeholder poster (replaces old PosterView) — token-driven, rounded. */
-class GradientPoster(ctx: Context, val media: Media, t: DesignTokens = AppTheme.current) : View(ctx) {
-    private val c1 = Color.parseColor(media.color1)
-    private val c2 = Color.parseColor(media.color2)
-    // pick a text color that keeps WCAG contrast on this gradient
-    // (WCAG relative-luminance threshold for switching text polarity is ~0.183)
-    private val textColor: Int = run {
-        val avg = ((luminance(c1) + luminance(c2)) / 2.0)
-        if (avg > 0.183) 0xFF101828.toInt() else t.colors.textOnAccent
+/** Gradient placeholder poster: gradient fill + bottom scrim + TextView title (token-driven, rounded). */
+class GradientPoster(ctx: Context, val media: Media, t: DesignTokens = AppTheme.current) : FrameLayout(ctx) {
+    init {
+        val c1 = Color.parseColor(media.color1)
+        val c2 = Color.parseColor(media.color2)
+        // WCAG-derived polarity switch (threshold 0.183); scrim guarantees the title zone contrast
+        val avg = (luminance(c1) + luminance(c2)) / 2.0
+        val ink = if (avg > 0.183) 0xFF101828.toInt() else 0xFFFFFFFF.toInt()
+        val scrimColor = if (ink == 0xFF101828.toInt()) 0xFFFFFFFF.toInt() else 0xFF000000.toInt()
+        background = android.graphics.drawable.GradientDrawable(
+            android.graphics.drawable.GradientDrawable.Orientation.TL_BR, intArrayOf(c1, c2)
+        )
+        // decorative blob
+        addView(View(ctx).apply {
+            background = android.graphics.drawable.GradientDrawable(
+                android.graphics.drawable.GradientDrawable.Orientation.TL_BR,
+                intArrayOf(withAlpha(ink, 0.10f), withAlpha(ink, 0f))
+            )
+        }, LayoutParams(MATCH, MATCH))
+        // bottom scrim for legibility
+        addView(View(ctx).apply {
+            background = android.graphics.drawable.GradientDrawable(
+                android.graphics.drawable.GradientDrawable.Orientation.BOTTOM_TOP,
+                intArrayOf(withAlpha(scrimColor, 0.62f), withAlpha(scrimColor, 0f))
+            )
+        }, LayoutParams(MATCH, (resources.displayMetrics.heightPixels / 3).coerceAtLeast(dp(120)), Gravity.BOTTOM))
+        addView(AppText(ctx, media.type.label.uppercase(), TextStyle.LABEL, color = withAlpha(ink, 0.85f), t = t).apply {
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            val p = dp(10); setPadding(p, p, p, p)
+        }, LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.CENTER_HORIZONTAL))
+        addView(AppText(ctx, media.title, TextStyle.TITLE, color = ink, bold = true, t = t).apply {
+            gravity = Gravity.CENTER
+            val p = dp(t.space.md); setPadding(p, p, p, p)
+            maxLines = 3
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            textAlignment = View.TEXT_ALIGNMENT_CENTER
+        }, LayoutParams(MATCH, WRAP, Gravity.CENTER))
     }
-    private val scrimColor: Int = if (textColor == 0xFF101828.toInt()) 0xFFFFFFFF.toInt() else 0xFF000000.toInt()
-    private val titlePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-        color = textColor; typeface = android.graphics.Typeface.DEFAULT_BOLD; textAlign = android.graphics.Paint.Align.CENTER
-    }
-    private val labelPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-        color = withAlpha(textColor, 0.85f); textAlign = android.graphics.Paint.Align.CENTER
-    }
-    private val bgPaint = android.graphics.Paint()
 
     override fun onMeasure(wSpec: Int, hSpec: Int) {
         val w = MeasureSpec.getSize(wSpec)
@@ -441,38 +474,6 @@ class GradientPoster(ctx: Context, val media: Media, t: DesignTokens = AppTheme.
             else -> w * 3 / 2 // 2:3 poster aspect
         }
         setMeasuredDimension(w, h)
-    }
-
-    override fun onDraw(canvas: android.graphics.Canvas) {
-        val w = width.toFloat(); val h = height.toFloat()
-        bgPaint.shader = android.graphics.LinearGradient(0f, 0f, w, h, c1, c2, android.graphics.Shader.TileMode.CLAMP)
-        canvas.drawRect(0f, 0f, w, h, bgPaint)
-        val deco = android.graphics.Paint().apply { color = withAlpha(textColor, 0.08f) }
-        canvas.drawCircle(w * 0.84f, h * 0.14f, w * 0.33f, deco)
-        labelPaint.textSize = w * 0.05f
-        canvas.drawText(media.type.label.uppercase(), w / 2f, h * 0.12f, labelPaint)
-        // scrim behind the title so text keeps WCAG contrast on any gradient
-        val scrim = android.graphics.Paint().apply {
-            shader = android.graphics.LinearGradient(
-                0f, h * 0.30f, 0f, h * 0.85f,
-                withAlpha(scrimColor, 0.62f), withAlpha(scrimColor, 0f),
-                android.graphics.Shader.TileMode.CLAMP
-            )
-        }
-        canvas.drawRect(0f, h * 0.30f, w, h * 0.85f, scrim)
-        val words = media.title.split(" ").filter { it.isNotBlank() }
-        val lines = mutableListOf<String>(); var cur = ""
-        for (word in words) {
-            val cand = if (cur.isEmpty()) word else "$cur $word"
-            if (cand.length <= 14) cur = cand else { if (cur.isNotEmpty()) lines.add(cur); cur = word }
-        }
-        if (cur.isNotEmpty()) lines.add(cur)
-        val shown = if (lines.size > 3) lines.take(2) + lines[2].take(11) + "…" else lines
-        val fs = when (shown.size) { 1 -> w * 0.115f; 2 -> w * 0.10f; else -> w * 0.08f }
-        titlePaint.textSize = fs
-        val lh = fs * 1.15f
-        val startY = h * 0.5f - (shown.size - 1) * lh / 2f + fs * 0.35f
-        shown.forEachIndexed { i, line -> canvas.drawText(line, w / 2f, startY + i * lh, titlePaint) }
     }
 }
 
@@ -572,7 +573,7 @@ fun EmptyState(ctx: Context, emoji: String, title: String, message: String, t: D
 /** Shimmering skeleton block for loading states. */
 fun Skeleton(ctx: Context, w: Int, hDp: Int, t: DesignTokens = AppTheme.current): View {
     val v = View(ctx).apply {
-        glass(t.radius.button, t = t)
+        glass(t.radius.poster, t = t)
         layoutParams = ViewGroup.LayoutParams(w, ctx.dp(hDp))
     }
     if (ctx.reduceMotion()) {
@@ -614,6 +615,8 @@ fun MagnetRow(ctx: Context, mag: LiveMagnet, t: DesignTokens = AppTheme.current,
 fun FormField(ctx: Context, label: String, value: String, hint: String = "", secret: Boolean = false, t: DesignTokens = AppTheme.current): Pair<TextView, EditText> {
     val lab = AppText(ctx, label, TextStyle.LABEL, bold = true, t = t)
     val et = EditText(ctx).apply {
+        id = View.generateViewId()
+        lab.labelFor = id
         setText(value)
         if (hint.isNotEmpty()) this.hint = hint
         setHintTextColor(t.colors.textSecondary)
