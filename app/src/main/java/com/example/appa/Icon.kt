@@ -69,11 +69,9 @@ class IconView(ctx: Context, val kind: IconKind, sizeDp: Int = 24, color: Int = 
                     p.reset(); p.moveTo(4f, y); p.lineTo(20f, y); c.drawPath(p, stroke)
                 }
             }
-            IconKind.INBOX -> { // tray
-                p.reset()
-                p.moveTo(3f, 13f); p.lineTo(6.5f, 5f); p.lineTo(17.5f, 5f); p.lineTo(21f, 13f)
-                p.lineTo(21f, 18f); p.arcTo(21f, 20f, 19f, 20f, 0f); p.lineTo(5f, 20f); p.arcTo(3f, 20f, 3f, 18f, 0f); p.close()
-                c.drawPath(p, stroke)
+            IconKind.INBOX -> { // tray: rounded box + flap + inner lip
+                p.reset(); p.addRoundRect(3f, 13f, 21f, 20f, 2f, 2f, Path.Direction.CW); c.drawPath(p, stroke)
+                p.reset(); p.moveTo(3f, 13f); p.lineTo(6.5f, 5f); p.lineTo(17.5f, 5f); p.lineTo(21f, 13f); c.drawPath(p, stroke)
                 p.reset(); p.moveTo(3f, 13f); p.lineTo(10f, 13f); p.lineTo(12f, 16f); p.lineTo(14f, 16f); p.lineTo(16f, 13f); p.lineTo(21f, 13f); c.drawPath(p, stroke)
             }
             IconKind.GEAR -> { // cog: ring + hub + 8 teeth
