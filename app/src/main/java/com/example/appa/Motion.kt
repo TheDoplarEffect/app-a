@@ -29,13 +29,16 @@ fun Context.reduceMotion(): Boolean =
 
 // Material 3 motion curves: standard (0.2,0,0,1) for enters, emphasized (0.05,0.7,0.1,1) for large surfaces
 val FastOutSlowIn = PathInterpolator(0.2f, 0f, 0f, 1f)
-val EmphasizedPath = PathInterpolator(0.05f, 0.7f, 0.1f, 1f)
 val EmphasizedOvershoot = OvershootInterpolator(1.4f)       // pill pop
 
 private fun View.motion() = AppTheme.current.motion
 
+/** When the user requested reduced motion, jump straight to the end state (no animator). */
+private fun View.skipAnim(): Boolean = context.reduceMotion()
+
 /** Fade + rise entrance. */
 fun View.slideUpIn(delayMs: Long = 0, durationMs: Long = -1): View {
+    if (skipAnim()) { alpha = 1f; translationY = 0f; visibility = View.VISIBLE; return this }
     val m = motion()
     alpha = 0f
     translationY = dp(24).toFloat()
@@ -50,6 +53,7 @@ fun View.slideUpIn(delayMs: Long = 0, durationMs: Long = -1): View {
 
 /** Simple fade entrance. */
 fun View.fadeIn(delayMs: Long = 0, durationMs: Long = -1): View {
+    if (skipAnim()) { alpha = 1f; visibility = View.VISIBLE; return this }
     val m = motion()
     alpha = 0f
     visibility = View.VISIBLE
@@ -63,6 +67,7 @@ fun View.fadeIn(delayMs: Long = 0, durationMs: Long = -1): View {
 
 /** Pop entrance (scale + fade) for hero elements. */
 fun View.popIn(delayMs: Long = 0): View {
+    if (skipAnim()) { alpha = 1f; scaleX = 1f; scaleY = 1f; visibility = View.VISIBLE; return this }
     val m = motion()
     alpha = 0f
     scaleX = 0.85f
@@ -78,6 +83,7 @@ fun View.popIn(delayMs: Long = 0): View {
 
 /** Staggered entrance for all children of a container (list/grid). */
 fun ViewGroup.staggerIn(stepMs: Long = 45): ViewGroup {
+    if (context.reduceMotion()) return this
     for (i in 0 until childCount) {
         val c = getChildAt(i)
         c.alpha = 0f
@@ -95,8 +101,8 @@ fun ViewGroup.staggerIn(stepMs: Long = 45): ViewGroup {
 fun View.withPressScale(): View {
     setOnTouchListener { v, ev ->
         when (ev.actionMasked) {
-            MotionEvent.ACTION_DOWN -> v.animate().scaleX(0.94f).scaleY(0.94f)
-                .setDuration(motion().instantMs * 2).setInterpolator(FastOutSlowIn).start()
+            MotionEvent.ACTION_DOWN -> if (v.context.reduceMotion()) { v.scaleX = 0.97f; v.scaleY = 0.97f } else v.animate().scaleX(0.94f).scaleY(0.94f)
+                .setDuration(motion().instantMs).setInterpolator(FastOutSlowIn).start()
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> v.animate().scaleX(1f).scaleY(1f)
                 .setDuration(motion().shortMs).setInterpolator(EmphasizedOvershoot).start()
         }

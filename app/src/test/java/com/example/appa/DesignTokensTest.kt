@@ -112,24 +112,43 @@ class DesignTokensTest {
         }
     }
 
+    /** The effective app-bar surface: strong glass composited over the screen background. */
+    private fun glassOverBg(t: DesignTokens): Int =
+        compositeOver(t.colors.surfaceGlassStrong, t.colors.background)
+
+    /** Worst case: strong glass over the brightest aurora blob (max luminance). */
+    private fun worstSurface(t: DesignTokens): Int {
+        val blobs = listOf(t.colors.aurora1, t.colors.aurora2, t.colors.aurora3)
+            .map { compositeOver(t.colors.surfaceGlassStrong, it) }
+        return blobs.maxByOrNull { luminance(it) }!!
+    }
+
     @Test
-    fun `status colors used as chip text pass WCAG AA on the theme background`() {
+    fun `text passes WCAG AA on the real glass surface (and 3:1 over the brightest aurora blob)`() {
         for (t in themes) {
-            for (c in listOf(t.colors.success, t.colors.warning, t.colors.error, t.colors.info)) {
-                val r = contrastRatio(c, t.colors.background)
-                assertTrue("${t.name} status color contrast $r < 4.5", r >= 4.5)
+            val glass = glassOverBg(t)
+            val worst = worstSurface(t)
+            for ((name, c) in listOf("primary" to t.colors.textPrimary, "secondary" to t.colors.textSecondary, "accentText" to t.colors.accentText)) {
+                val r = contrastRatio(c, glass)
+                assertTrue("${t.name} $name on glass contrast $r < 4.5", r >= 4.5)
+                val rw = contrastRatio(c, worst)
+                assertTrue("${t.name} $name over worst aurora blob contrast $rw < 3.0", rw >= 3.0)
             }
         }
     }
 
     @Test
-    fun `status colors pass WCAG AA on their own 22%-tinted pill background`() {
+    fun `status colors pass WCAG AA on their real composited pill background`() {
         for (t in themes) {
-            // the pill bg is withAlpha(color, 0.22) composited over the (opaque) screen background
+            val glass = glassOverBg(t)
+            val worst = worstSurface(t)
             for (c in listOf(t.colors.success, t.colors.warning, t.colors.error, t.colors.info)) {
-                val pillBg = compositeOver(withAlpha(c, 0.22f), t.colors.background)
+                val pillBg = compositeOver(withAlpha(c, 0.28f), glass)
                 val r = contrastRatio(c, pillBg)
-                assertTrue("${t.name} status-on-tint contrast $r < 4.5", r >= 4.5)
+                assertTrue("${t.name} status-on-pill contrast $r < 4.5", r >= 4.5)
+                val pillWorst = compositeOver(withAlpha(c, 0.28f), worst)
+                val rw = contrastRatio(c, pillWorst)
+                assertTrue("${t.name} status-on-pill over worst blob contrast $rw < 3.0", rw >= 3.0)
             }
         }
     }

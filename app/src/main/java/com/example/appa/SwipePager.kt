@@ -33,7 +33,7 @@ class SwipePager(ctx: Context) : ViewGroup(ctx) {
         val target = i.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
         current = target
         val dx = target * width - scrollX
-        if (animate && dx != 0) {
+        if (animate && dx != 0 && !context.reduceMotion()) {
             scroller.startScroll(scrollX, 0, dx, 0, AppTheme.current.motion.mediumMs.toInt())
             invalidate()
         } else {

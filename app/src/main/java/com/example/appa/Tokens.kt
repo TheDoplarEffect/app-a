@@ -59,7 +59,8 @@ data class RadiusTokens(
     val button: Int,   // buttons / fields
     val sheet: Int,    // bottom sheets / hero
     val pill: Int,     // chips, badges (fully rounded)
-    val thumb: Int     // small thumbnails (request rows)
+    val thumb: Int,    // small thumbnails (request rows)
+    val navBar: Int    // bottom navigation bar
 )
 
 // ------------------------------------------------------------------ motion
@@ -98,11 +99,11 @@ val CrystalGlassDark = DesignTokens(
         aurora1 = 0xFF7C3AED.toInt(),   // violet
         aurora2 = 0xFF22D3EE.toInt(),   // cyan
         aurora3 = 0xFFEC4899.toInt(),   // magenta
-        surfaceGlass = 0x14FFFFFF.toInt(),        // ~8% white
-        surfaceGlassStrong = 0x1EFFFFFF.toInt(),  // ~12% white
+        surfaceGlass = 0x8C0A0C14.toInt(),        // 55% bg-tinted glass — aurora still shows through
+        surfaceGlassStrong = 0xB30A0C14.toInt(),  // 70% for app bar / nav (keeps text contrast on blobs)
         glassBorder = 0x2EFFFFFF.toInt(),         // hairline light stroke
         textPrimary = 0xFFF2F5FF.toInt(),
-        textSecondary = 0xFFAAB4CE.toInt(),
+        textSecondary = 0xFFC7CEDD.toInt(),
         textOnAccent = 0xFFFFFFFF.toInt(),
         accentStart = 0xFF4F46E5.toInt(),  // indigo-600: white label passes WCAG AA on the whole gradient
         accentEnd = 0xFF9333EA.toInt(),    // purple-600
@@ -111,14 +112,14 @@ val CrystalGlassDark = DesignTokens(
         success = 0xFF34D399.toInt(),
         warning = 0xFFFBBF24.toInt(),
         error = 0xFFFCA5A5.toInt(),        // light enough to pass on the 22%-tinted dark chip
-        info = 0xFF38BDF8.toInt(),
+        info = 0xFFBAE6FD.toInt(),   // bright enough to keep 3:1 over the brightest aurora blob
         scrimTop = 0x00000000,
         scrimBottom = 0xD9000000.toInt(),
         chipScrim = 0xB3000000.toInt()
     ),
     type = TypeTokens(displaySp = 28f, headlineSp = 22f, titleSp = 17f, bodySp = 14f, labelSp = 11f),
     space = SpaceTokens(xs = 4, sm = 8, md = 12, lg = 16, xl = 24, xxl = 32),
-    radius = RadiusTokens(poster = 20, card = 24, button = 16, sheet = 32, pill = 999, thumb = 12),
+    radius = RadiusTokens(poster = 20, card = 24, button = 16, sheet = 32, pill = 999, thumb = 12, navBar = 28),
     motion = MotionTokens(instantMs = 80, shortMs = 160, mediumMs = 300, longMs = 500),
     elevation = ElevationTokens(level1Dp = 4f, level2Dp = 12f, level3Dp = 24f, shadowColor = 0x66000000.toInt())
 )
@@ -141,10 +142,10 @@ val PorcelainLight = DesignTokens(
         accentEnd = 0xFF9333EA.toInt(),
         accentSolid = 0xFF5B4BD6.toInt(),  // dark enough for white text (WCAG AA)
         accentText = 0xFF4F46E5.toInt(),   // accent-as-text on light glass (WCAG AA)
-        success = 0xFF036B4C.toInt(),   // darkened to pass on the 22%-tinted light chip
-        warning = 0xFF92400E.toInt(),
+        success = 0xFF024E36.toInt(),   // pass WCAG AA on the tinted pill over glass
+        warning = 0xFF78350F.toInt(),
         error = 0xFF9F1239.toInt(),
-        info = 0xFF075985.toInt(),
+        info = 0xFF064E75.toInt(),
         scrimTop = 0x00000000,
         scrimBottom = 0xD9000000.toInt(),
         chipScrim = 0xB3000000.toInt()

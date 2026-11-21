@@ -117,7 +117,16 @@ class SettingsActivity : Activity() {
 
     private fun save() {
         val cfg = collect()
+        // block saving with an invalid URL (missing scheme) — show where
+        for (key in listOf("sonarrUrl", "radarrUrl", "prowlarrUrl", "jellyfinUrl")) {
+            val err = AppConfig().urlError(fields[key]!!.text.toString().trim().trimEnd('/'))
+            if (err != null) {
+                Toast.makeText(this, "${fields[key]!!.hint}: $err", Toast.LENGTH_LONG).show()
+                return
+            }
+        }
         saveBtn.isEnabled = false
+        saveBtn.text = "Saving…"
         AppState.saveConfig(this, cfg) {
             // honest feedback: only claim live mode when it actually engaged
             Toast.makeText(
@@ -146,7 +155,7 @@ class SettingsActivity : Activity() {
                 testResults.addView(it, LinearLayout.LayoutParams(WRAP, WRAP).apply { marginEnd = dp(6); topMargin = dp(4) })
             }
         }
-        Thread {
+        WorkerScope.spawn {
             val results = runCatching { LiveRepository(cfg).pingAll() }.getOrElse { emptyMap() }
             Handler(Looper.getMainLooper()).post {
                 if (isFinishing || isDestroyed) return@post

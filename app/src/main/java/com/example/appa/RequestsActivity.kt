@@ -7,7 +7,6 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Toast
-import java.util.Collections
 
 /**
  * Requests screen (organism): glass list of requested titles with animated
@@ -20,7 +19,7 @@ class RequestsActivity : Activity() {
     private lateinit var list: LinearLayout
     private lateinit var countLabel: android.widget.TextView
     private lateinit var staleLabel: android.widget.TextView
-    private val dialogs = Collections.synchronizedList(mutableListOf<AlertDialog>())
+    private val dialogs = java.util.Collections.synchronizedList(mutableListOf<AlertDialog>())
     private val poller = StatusPoller { changed, failed ->
         if (failed) staleLabel.text = "⚠ Last status refresh failed — showing cached statuses"
         else if (staleLabel.text.isNotEmpty()) staleLabel.text = ""
@@ -152,6 +151,6 @@ class RequestsActivity : Activity() {
             card.pressable() // press feedback on the card
             list.addView(card, list.lp(MATCH, WRAP, marginTopDp = if (i == 0) 0 else t.space.sm))
         }
-        list.staggerIn(stepMs = 30)
+        if (list.childCount > 0) list.staggerIn(stepMs = 30) // animate only the initial fill, not every status tick
     }
 }
