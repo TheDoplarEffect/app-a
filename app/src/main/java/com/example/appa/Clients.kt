@@ -269,18 +269,14 @@ class SonarrClient(baseUrl: String, apiKey: String, http: HttpTransport = realHt
     }
 
     fun seriesStates(): List<SeriesState> =
-        runCatching {
-            api("/api/v3/series").arr().map { s ->
-                val o = s.obj()
-                val stats = o["statistics"].obj()
-                SeriesState(o["id"].int(), o["tvdbId"].int(), stats["episodeFileCount"].int(0) > 0)
-            }
-        }.getOrElse { emptyList() }
+        api("/api/v3/series").arr().map { s ->
+            val o = s.obj()
+            val stats = o["statistics"].obj()
+            SeriesState(o["id"].int(), o["tvdbId"].int(), stats["episodeFileCount"].int(0) > 0)
+        }
 
     fun queueSeriesIds(): Set<Int> =
-        runCatching {
-            api("/api/v3/queue", "pageSize=200").obj()["records"].arr().mapNotNull { it.obj()["seriesId"].int(-1).takeIf { id -> id > 0 } }.toSet()
-        }.getOrElse { emptySet() }
+        api("/api/v3/queue", "pageSize=200").obj()["records"].arr().mapNotNull { it.obj()["seriesId"].int(-1).takeIf { id -> id > 0 } }.toSet()
 }
 
 class RadarrClient(baseUrl: String, apiKey: String, http: HttpTransport = realHttp) :
@@ -308,17 +304,13 @@ class RadarrClient(baseUrl: String, apiKey: String, http: HttpTransport = realHt
     }
 
     fun movieStates(): List<MovieState> =
-        runCatching {
-            api("/api/v3/movie").arr().map { m ->
-                val o = m.obj()
-                MovieState(o["id"].int(), o["tmdbId"].str(), o["hasFile"].str() == "true")
-            }
-        }.getOrElse { emptyList() }
+        api("/api/v3/movie").arr().map { m ->
+            val o = m.obj()
+            MovieState(o["id"].int(), o["tmdbId"].str(), o["hasFile"].str() == "true")
+        }
 
     fun queueMovieIds(): Set<Int> =
-        runCatching {
-            api("/api/v3/queue", "pageSize=200").obj()["records"].arr().mapNotNull { it.obj()["movieId"].int(-1).takeIf { id -> id > 0 } }.toSet()
-        }.getOrElse { emptySet() }
+        api("/api/v3/queue", "pageSize=200").obj()["records"].arr().mapNotNull { it.obj()["movieId"].int(-1).takeIf { id -> id > 0 } }.toSet()
 }
 
 // ---------------------------------------------------------------- Jellyfin

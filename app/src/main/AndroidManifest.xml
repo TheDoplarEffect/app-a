@@ -10,8 +10,8 @@
         <category android:name="android.intent.category.LAUNCHER"/>
       </intent-filter>
     </activity>
-    <activity android:name=".DetailActivity" android:exported="false"/>
-    <activity android:name=".RequestsActivity" android:exported="false"/>
-    <activity android:name=".SettingsActivity" android:exported="false"/>
+    <activity android:name=".DetailActivity" android:exported="false" android:windowSoftInputMode="adjustResize"/>
+    <activity android:name=".RequestsActivity" android:exported="false" android:windowSoftInputMode="adjustResize"/>
+    <activity android:name=".SettingsActivity" android:exported="false" android:windowSoftInputMode="adjustResize"/>
   </application>
 </manifest>

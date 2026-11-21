@@ -35,7 +35,9 @@ class AuroraBackground(context: Context) : View(context) {
             // 1/8 scale + bilinear upscale + (API 31+) real blur = soft frosted backdrop
             val bw = (w / 8).coerceAtLeast(48)
             val bh = (h / 8).coerceAtLeast(48)
+            val old = bmp
             bmp = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888)
+            if (old != null && !old.isRecycled) old.recycle()
             blobCanvas = Canvas(bmp!!)
         }
     }
@@ -101,7 +103,6 @@ class AuroraBackground(context: Context) : View(context) {
     }
 
     /** Static fallback for tests/previews. */
-    fun renderOnce() { invalidate() }
 }
 
 /** Helper: a root container with the aurora backdrop behind content. */

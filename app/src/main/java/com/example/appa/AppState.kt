@@ -35,9 +35,11 @@ object AppState {
             load = { prefs.getString("requests", null) },
             save = { value -> prefs.edit().putString("requests", value).apply() }
         )
-        // Keystore load + AES-GCM decrypt can take 100ms+ — keep it off the main
-        // thread (StrictMode/ANR). State starts empty and is posted when ready.
-        Thread {
+        // Pre-warm off the main thread (StrictMode/ANR): first prefs disk read,
+        // Keystore load + AES-GCM decrypt, and the placeholder catalog.
+        WorkerScope.spawn {
+            prefs.getString("requests", null) // warm page cache
+            Catalog.all.size
             val wiped = SecureStore.wasWiped
             val cfg = SecureStore.loadConfig(app)
             val st = State(cfg, RepositoryFactory.create(cfg))
@@ -46,7 +48,7 @@ object AppState {
                 state = st
                 onConfigChanged?.invoke()
             }
-        }.start()
+        }
     }
 
     fun saveConfig(context: Context, cfg: AppConfig, onDone: (() -> Unit)? = null) {
@@ -84,43 +86,41 @@ object AppState {
 class StatusPoller(private val onTick: (changed: Boolean, failed: Boolean) -> Unit) {
     private val handler = Handler(Looper.getMainLooper())
     private val busy = AtomicBoolean(false)
-    private val workers = Collections.synchronizedList(mutableListOf<Thread>())
     @Volatile private var running = false
 
     private val runnable = object : Runnable {
         override fun run() {
             if (!running) return
             val live = AppState.liveMode
-            if (!busy.compareAndSet(false, true)) { schedule(live); return }
-            try {
-                val changedLocal = AppState.store.tick().isNotEmpty()
-                if (live) {
-                    val th = Thread {
+            if (live) {
+                // in-flight guard spans the WHOLE async refresh — slow *arr calls must not pile up
+                if (!busy.compareAndSet(false, true)) { schedule(); return }
+                WorkerScope.spawn {
+                    try {
                         val res = runCatching { AppState.repo?.refreshStatuses(AppState.store) ?: emptyList() }
                         handler.post {
-                            if (running) onTick(changedLocal || res.getOrDefault(emptyList()).isNotEmpty(), res.isFailure)
+                            if (running) onTick(AppState.store.tick().isNotEmpty() || res.getOrDefault(emptyList()).isNotEmpty(), res.isFailure)
                         }
+                    } finally {
+                        busy.set(false)
                     }
-                    workers.add(th)
-                    th.start()
-                } else {
-                    handler.post { if (running) onTick(changedLocal, false) }
                 }
-            } finally {
-                busy.set(false)
+            } else {
+                val changed = AppState.store.tick().isNotEmpty()
+                handler.post { if (running) onTick(changed, false) }
             }
-            schedule(live)
+            schedule()
         }
     }
 
-    private fun schedule(live: Boolean) {
-        handler.postDelayed(runnable, if (live) TICK_LIVE_MS else TICK_PLACEHOLDER_MS)
+    private fun schedule() {
+        handler.postDelayed(runnable, if (AppState.liveMode) TICK_LIVE_MS else TICK_PLACEHOLDER_MS)
     }
 
     fun start() {
         if (!running) {
             running = true
-            schedule(AppState.liveMode)
+            schedule()
         }
     }
 
@@ -129,13 +129,34 @@ class StatusPoller(private val onTick: (changed: Boolean, failed: Boolean) -> Un
         handler.removeCallbacks(runnable)
     }
 
-    fun cancel() {
-        stop()
-        synchronized(workers) { workers.forEach { it.interrupt() }; workers.clear() }
-    }
+    fun cancel() = stop()
 
     private companion object {
         const val TICK_LIVE_MS = 5_000L
         const val TICK_PLACEHOLDER_MS = 1_000L
+    }
+}
+
+/** Shared registry for fire-and-forget worker threads: spawn + interrupt-all on teardown. */
+object WorkerScope {
+    private val workers = Collections.synchronizedList(mutableListOf<Thread>())
+
+    fun spawn(block: () -> Unit): Thread {
+        prune()
+        val th = Thread(block)
+        workers.add(th)
+        th.start()
+        return th
+    }
+
+    fun cancelAll() {
+        synchronized(workers) {
+            workers.forEach { it.interrupt() }
+            workers.clear()
+        }
+    }
+
+    private fun prune() {
+        synchronized(workers) { workers.removeAll { !it.isAlive } }
     }
 }

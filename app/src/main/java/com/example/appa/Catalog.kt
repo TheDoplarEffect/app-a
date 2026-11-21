@@ -2,6 +2,7 @@ package com.example.appa
 
 import java.security.MessageDigest
 import java.util.UUID
+import java.util.concurrent.Executors
 import kotlin.random.Random
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -207,58 +208,61 @@ class RequestStoreCore(
 
     fun reload() {
         synchronized(lock) {
-            items.clear()
             val text = load() ?: return@synchronized
-            if (text.trimStart().startsWith("[")) {
-                // current format: JSON array
-                runCatching {
-                    jsonX.parseToJsonElement(text).arr().forEach { el ->
-                        val o = el.obj()
-                        items.add(
-                            Request(
-                                o["id"].str(), o["mediaId"].str(),
-                                o["requestedAt"].str().toLongOrNull() ?: 0L,
-                                runCatching { RequestStatus.valueOf(o["status"].str()) }.getOrDefault(RequestStatus.PENDING),
-                                o["statusUpdatedAt"].str().toLongOrNull() ?: 0L,
-                                external = o["external"].str(),
-                                snapshot = o["snapshot"].str()
-                            )
-                        )
-                    }
-                }
-                return@synchronized
-            }
-            // legacy format: TSV lines (read-only fallback for one release)
-            for (line in text.split("\n")) {
-                if (line.isBlank()) continue
-                val p = line.split("\t").map { it.replace("\\t", "\t").replace("\\n", "\n") }
-                if (p.size >= 5) {
-                    runCatching {
-                        items.add(
-                            Request(
-                                p[0], p[1], p[2].toLong(), RequestStatus.valueOf(p[3]), p[4].toLong(),
-                                external = if (p.size > 5) p[5] else ""
-                            )
-                        )
-                    }
-                }
-            }
+            val parsed = parseAll(text) ?: return@synchronized // corrupt: keep existing items, never wipe
+            items.clear()
+            items.addAll(parsed)
         }
     }
 
-    private fun persist() {
-        val arr = buildJsonArray {
-            for (r in items) add(buildJsonObject {
-                put("id", r.id)
-                put("mediaId", r.mediaId)
-                put("requestedAt", r.requestedAt)
-                put("status", r.status.name)
-                put("statusUpdatedAt", r.statusUpdatedAt)
-                put("external", r.external)
-                put("snapshot", r.snapshot)
-            })
+    /** Parse the persisted text into requests; null = unreadable (caller keeps current items). */
+    private fun parseAll(text: String): List<Request>? {
+        if (text.trimStart().startsWith("[")) {
+            return runCatching {
+                jsonX.parseToJsonElement(text).arr().map { el ->
+                    val o = el.obj()
+                    Request(
+                        o["id"].str(), o["mediaId"].str(),
+                        o["requestedAt"].str().toLongOrNull() ?: 0L,
+                        runCatching { RequestStatus.valueOf(o["status"].str()) }.getOrDefault(RequestStatus.PENDING),
+                        o["statusUpdatedAt"].str().toLongOrNull() ?: 0L,
+                        external = o["external"].str(),
+                        snapshot = o["snapshot"].str()
+                    )
+                }
+            }.getOrNull()
         }
-        save(arr.toString())
+        // legacy format: TSV lines (read-only fallback), tolerant per line
+        val out = mutableListOf<Request>()
+        for (line in text.split("\n")) {
+            if (line.isBlank()) continue
+            val p = line.split("\t").map { it.replace("\\t", "\t").replace("\\n", "\n") }
+            if (p.size >= 5) {
+                runCatching {
+                    out.add(Request(p[0], p[1], p[2].toLong(), RequestStatus.valueOf(p[3]), p[4].toLong(), external = if (p.size > 5) p[5] else ""))
+                }
+            }
+        }
+        return out
+    }
+
+    private val persistIo = Executors.newSingleThreadExecutor()
+
+    private fun persist() {
+        val text = synchronized(lock) {
+            buildJsonArray {
+                for (r in items) add(buildJsonObject {
+                    put("id", r.id)
+                    put("mediaId", r.mediaId)
+                    put("requestedAt", r.requestedAt)
+                    put("status", r.status.name)
+                    put("statusUpdatedAt", r.statusUpdatedAt)
+                    put("external", r.external)
+                    put("snapshot", r.snapshot)
+                })
+            }.toString()
+        }
+        persistIo.execute { save(text) } // disk write off the caller (often main) thread
     }
 }
 
