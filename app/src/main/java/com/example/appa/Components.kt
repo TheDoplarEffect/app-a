@@ -243,7 +243,7 @@ class BottomNavBar(private val ctx: Context, val items: List<NavItem>, initial: 
     private val pills = mutableListOf<View>()
     private val icons = mutableListOf<TextView>()
     private val labels = mutableListOf<TextView>()
-    var selected = initial
+    var selected = -1 // unset until the initial post runs, so the first select() always fires onSelect
         private set
     private var initialized = false
 
@@ -283,7 +283,7 @@ class BottomNavBar(private val ctx: Context, val items: List<NavItem>, initial: 
             root.addView(cell, LinearLayout.LayoutParams(0, WRAP, 1f))
             cells.add(cell); pills.add(pill); icons.add(icon); labels.add(label)
         }
-        root.post { select(initial, animate = false); initialized = true }
+        root.post { initialized = true; select(initial, animate = false) } // flag FIRST: breaks the select<->goToPage recursion
     }
 
     fun select(i: Int, animate: Boolean = true) {
@@ -433,9 +433,8 @@ class GradientPoster(ctx: Context, val media: Media, t: DesignTokens = AppTheme.
     init {
         val c1 = Color.parseColor(media.color1)
         val c2 = Color.parseColor(media.color2)
-        // WCAG-derived polarity switch (threshold 0.183); scrim guarantees the title zone contrast
-        val avg = (luminance(c1) + luminance(c2)) / 2.0
-        val ink = if (avg > 0.183) 0xFF101828.toInt() else 0xFFFFFFFF.toInt()
+        // ink picked by the WORST gradient endpoint (passes WCAG AA on both ends, not just the average)
+        val (ink, needScrim) = posterInk(c1, c2)
         val scrimColor = if (ink == 0xFF101828.toInt()) 0xFFFFFFFF.toInt() else 0xFF000000.toInt()
         background = android.graphics.drawable.GradientDrawable(
             android.graphics.drawable.GradientDrawable.Orientation.TL_BR, intArrayOf(c1, c2)
@@ -454,6 +453,10 @@ class GradientPoster(ctx: Context, val media: Media, t: DesignTokens = AppTheme.
                 intArrayOf(withAlpha(scrimColor, 0.62f), withAlpha(scrimColor, 0f))
             )
         }, LayoutParams(MATCH, (resources.displayMetrics.heightPixels / 3).coerceAtLeast(dp(120)), Gravity.BOTTOM))
+        if (needScrim) { // mid-luminance gradient: translucent scrim behind the text zones
+            addView(View(ctx).apply { background = android.graphics.drawable.ColorDrawable(withAlpha(scrimColor, 0.35f)) },
+                LayoutParams(MATCH, MATCH))
+        }
         addView(AppText(ctx, media.type.label.uppercase(), TextStyle.LABEL, color = withAlpha(ink, 0.85f), t = t).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
             val p = dp(10); setPadding(p, p, p, p)
@@ -477,6 +480,18 @@ class GradientPoster(ctx: Context, val media: Media, t: DesignTokens = AppTheme.
     }
 }
 
+/** ImageView that keeps the 2:3 poster aspect even before the bitmap arrives (no grid reflow on load). */
+class PosterImageView(ctx: Context) : ImageView(ctx) {
+    override fun onMeasure(wSpec: Int, hSpec: Int) {
+        val w = MeasureSpec.getSize(wSpec)
+        val h = when (MeasureSpec.getMode(hSpec)) {
+            MeasureSpec.EXACTLY -> MeasureSpec.getSize(hSpec)
+            else -> w * 3 / 2
+        }
+        setMeasuredDimension(w, h)
+    }
+}
+
 /**
  * Poster grid cell atom: 2:3 poster (image or gradient) with rounded corners,
  * bottom scrim, rating chip, status badge, title + subtitle below.
@@ -490,18 +505,16 @@ fun PosterCard(ctx: Context, m: Media, status: RequestStatus? = null, t: DesignT
         val posterFrame = FrameLayout(ctx).apply {
             layoutParams = LinearLayout.LayoutParams(MATCH, WRAP)
         }
+        // gradient ALWAYS behind the photo: load-in-progress and load-failure show the gradient, never a gray box
+        posterFrame.addView(GradientPoster(ctx, m, t).apply { roundedClip(t.radius.poster) }, FrameLayout.LayoutParams(MATCH, WRAP))
         if (m.posterUrl != null) {
-            val img = ImageView(ctx).apply {
+            val img = PosterImageView(ctx).apply {
                 scaleType = ImageView.ScaleType.CENTER_CROP
-                minimumHeight = ctx.dp(150)
                 roundedClip(t.radius.poster)
                 contentDescription = "${m.title} poster"
             }
             posterFrame.addView(img, FrameLayout.LayoutParams(MATCH, WRAP))
             ImageLoader.load(m.posterUrl!!, img)
-        } else {
-            val gp = GradientPoster(ctx, m, t).apply { roundedClip(t.radius.poster) }
-            posterFrame.addView(gp, FrameLayout.LayoutParams(MATCH, WRAP))
         }
         // scrim + rating + badge overlay
         posterFrame.addView(View(ctx).apply {

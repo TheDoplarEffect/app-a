@@ -100,7 +100,7 @@ class DetailActivity : Activity() {
     override fun onDestroy() {
         // no window leaks: dismiss dialogs; no thread leaks: interrupt workers
         synchronized(dialogs) { dialogs.forEach { runCatching { it.dismiss() } }; dialogs.clear() }
-        WorkerScope.cancelAll()
+        // no WorkerScope.cancelAll() here: it would interrupt the main screen's in-flight workers
         super.onDestroy()
     }
 
@@ -119,6 +119,11 @@ class DetailActivity : Activity() {
             roundedClip(t.radius.sheet)
         }
         val heroH = dp(300)
+        // gradient always behind the photo: load-in-progress / failure shows the gradient, never a gray box
+        hero.addView(GradientPoster(this, media, t).apply {
+            roundedClip(t.radius.sheet)
+            contentDescription = "${media.title} poster"
+        }, FrameLayout.LayoutParams(MATCH, heroH))
         if (media.posterUrl != null) {
             val img = ImageView(this).apply {
                 scaleType = ImageView.ScaleType.CENTER_CROP
@@ -127,11 +132,6 @@ class DetailActivity : Activity() {
             }
             hero.addView(img, FrameLayout.LayoutParams(MATCH, heroH))
             ImageLoader.load(media.posterUrl!!, img)
-        } else {
-            hero.addView(GradientPoster(this, media, t).apply {
-                roundedClip(t.radius.sheet)
-                contentDescription = "${media.title} poster"
-            }, FrameLayout.LayoutParams(MATCH, heroH))
         }
         hero.addView(View(this).apply { background = posterScrim(140, t) },
             FrameLayout.LayoutParams(MATCH, dp(140), Gravity.BOTTOM))
@@ -227,16 +227,21 @@ class DetailActivity : Activity() {
             return
         }
         if (AppState.liveMode) {
+            // reserve atomically FIRST: the external *arr POST then happens at most once per title,
+            // even if two taps race or the process dies between POST and local persist
+            val reserved = AppState.store.create(media.id, snapshot = snapshot)
+            if (reserved == null) {
+                Toast.makeText(this, "Already requested", Toast.LENGTH_SHORT).show()
+                renderActions(media, AppTheme.current)
+                return
+            }
             spawnWorker {
                 val result = runCatching {
                     val external = AppState.repo?.request(media) ?: throw ApiException("Live mode off")
-                    val created = AppState.store.create(media.id, external = external, snapshot = snapshot)
-                    if (created == null) "Already requested"
-                    else {
-                        val kind = ExternalRef.parse(external)?.kind
-                        "Added to ${kind?.replaceFirstChar { it.uppercase() } ?: "local list"}"
-                    }
-                }
+                    AppState.store.setExternal(reserved.id, external)
+                    val kind = ExternalRef.parse(external)?.kind
+                    "Added to ${kind?.replaceFirstChar { it.uppercase() } ?: "local list"}"
+                }.onFailure { AppState.store.delete(reserved.id) } // roll back the reservation on failure
                 handler.post {
                     Toast.makeText(this, result.getOrElse { "Failed: ${it.message}" }, Toast.LENGTH_LONG).show()
                     renderActions(media, AppTheme.current)

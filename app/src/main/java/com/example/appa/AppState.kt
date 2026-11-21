@@ -3,7 +3,6 @@ package com.example.appa
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
-import java.util.Collections
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** App-wide singletons: config, catalog/repository, persisted request store. */
@@ -18,6 +17,9 @@ object AppState {
     /** Set when SecureStore had to wipe the config (key invalidated) — Settings surfaces it. */
     @Volatile var configWasWiped: Boolean = false
 
+    /** False until the async config load has landed — Settings must not save before this (would wipe keys). */
+    @Volatile var configLoaded: Boolean = false
+
     /** Called on the main thread whenever the (config, repo) pair changes (async load/save). */
     @Volatile var onConfigChanged: (() -> Unit)? = null
 
@@ -27,43 +29,49 @@ object AppState {
     /** Live mode is on when the config is complete enough to serve real data. */
     val liveMode: Boolean get() = state.config.normalized().liveReady
 
+    @Synchronized
     fun init(context: Context) {
-        if (::store.isInitialized) return
+        if (::store.isInitialized && configLoaded) return // fully loaded once; a later call only finishes a pending load
         val app = context.applicationContext
         val prefs = app.getSharedPreferences("appa", Context.MODE_PRIVATE)
-        store = RequestStoreCore(
-            load = { prefs.getString("requests", null) },
-            save = { value -> prefs.edit().putString("requests", value).apply() }
-        )
-        // Pre-warm off the main thread (StrictMode/ANR): first prefs disk read,
-        // Keystore load + AES-GCM decrypt, and the placeholder catalog.
+        if (!::store.isInitialized) {
+            store = RequestStoreCore(
+                load = { prefs.getString("requests", null) },
+                save = { value -> prefs.edit().putString("requests", value).commit() }, // durable: a kill must not lose requests
+                onCorrupt = { raw -> prefs.edit().putString("requests_corrupt", raw).commit() }, // quarantine, never clobber
+                deferLoad = true // the disk read happens on the worker below, not on the main thread
+            )
+        }
+        // Keystore load + AES-GCM decrypt + first prefs read all happen off the main thread (StrictMode/ANR)
         WorkerScope.spawn {
-            prefs.getString("requests", null) // warm page cache
-            Catalog.all.size
-            val wiped = SecureStore.wasWiped
-            val cfg = SecureStore.loadConfig(app)
+            store.reload()
+            Catalog.all.size // warm the placeholder catalog
+            val cfg = runCatching { SecureStore.loadConfig(app) }.getOrDefault(AppConfig())
+            val wiped = SecureStore.wasWiped // read AFTER loadConfig sets it, or the warning never fires
             val st = State(cfg, RepositoryFactory.create(cfg))
             Handler(Looper.getMainLooper()).post {
                 configWasWiped = wiped
+                configLoaded = true
                 state = st
                 onConfigChanged?.invoke()
             }
         }
     }
 
-    fun saveConfig(context: Context, cfg: AppConfig, onDone: (() -> Unit)? = null) {
+    fun saveConfig(context: Context, cfg: AppConfig, onDone: ((Boolean) -> Unit)? = null) {
         val app = context.applicationContext
         val normalized = cfg.normalized()
         configWasWiped = false
-        Thread {
-            SecureStore.saveConfig(app, normalized) // also clears SecureStore.wasWiped
-            val st = State(normalized, RepositoryFactory.create(normalized))
+        WorkerScope.spawn { // tracked + guarded: a Keystore failure can no longer kill the process
+            val ok = runCatching { SecureStore.saveConfig(app, normalized) }.isSuccess // also clears SecureStore.wasWiped
             Handler(Looper.getMainLooper()).post {
-                state = st
-                onConfigChanged?.invoke()
-                onDone?.invoke()
+                if (ok) {
+                    state = State(normalized, RepositoryFactory.create(normalized))
+                    onConfigChanged?.invoke()
+                }
+                onDone?.invoke(ok)
             }
-        }.start()
+        }
     }
 
     fun requestFor(mediaId: String): Request? = store.byMediaId(mediaId)
@@ -80,8 +88,7 @@ object AppState {
 /**
  * Shared status poller for the main grid and the requests screen (single
  * implementation instead of two tickers). In-flight guard so slow *arr
- * refreshes never pile up; [stop] pauses while a screen is covered;
- * [cancel] also interrupts worker threads (call from onDestroy).
+ * refreshes never pile up; [stop] pauses it while a screen is covered (onStop/onDestroy).
  */
 class StatusPoller(private val onTick: (changed: Boolean, failed: Boolean) -> Unit) {
     private val handler = Handler(Looper.getMainLooper())
@@ -129,8 +136,6 @@ class StatusPoller(private val onTick: (changed: Boolean, failed: Boolean) -> Un
         handler.removeCallbacks(runnable)
     }
 
-    fun cancel() = stop()
-
     private companion object {
         const val TICK_LIVE_MS = 5_000L
         const val TICK_PLACEHOLDER_MS = 1_000L
@@ -139,24 +144,17 @@ class StatusPoller(private val onTick: (changed: Boolean, failed: Boolean) -> Un
 
 /** Shared registry for fire-and-forget worker threads: spawn + interrupt-all on teardown. */
 object WorkerScope {
-    private val workers = Collections.synchronizedList(mutableListOf<Thread>())
+    private val lock = Any()
+    private val workers = mutableListOf<Thread>()
 
-    fun spawn(block: () -> Unit): Thread {
-        prune()
-        val th = Thread(block)
-        workers.add(th)
-        th.start()
-        return th
+    fun spawn(block: () -> Unit): Thread = synchronized(lock) {
+        workers.removeAll { !it.isAlive }
+        Thread(block).also { workers.add(it); it.start() }
     }
 
-    fun cancelAll() {
-        synchronized(workers) {
-            workers.forEach { it.interrupt() }
-            workers.clear()
-        }
-    }
-
-    private fun prune() {
-        synchronized(workers) { workers.removeAll { !it.isAlive } }
+    /** Process-wide teardown ONLY — never from an Activity: it interrupts unrelated screens' workers. */
+    fun cancelAll() = synchronized(lock) {
+        workers.forEach { it.interrupt() }
+        workers.clear()
     }
 }

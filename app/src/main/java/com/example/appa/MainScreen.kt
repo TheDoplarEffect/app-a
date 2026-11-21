@@ -19,9 +19,9 @@ import android.widget.ScrollView
  * state with Retry — never masquerade as "no results".
  */
 
-fun showMainScreen(activity: Activity): MainScreen {
+fun showMainScreen(activity: Activity, savedInstanceState: android.os.Bundle? = null): MainScreen {
     activity.edgeToEdge()
-    return MainScreen(activity).also { it.attach() }
+    return MainScreen(activity).also { it.attach(savedInstanceState) }
 }
 
 class MainScreen(private val activity: Activity) {
@@ -58,13 +58,21 @@ class MainScreen(private val activity: Activity) {
 
     private fun spawnWorker(block: () -> Unit) = WorkerScope.spawn(block)
 
-    fun attach() {
+    private var configListener: (() -> Unit)? = null
+
+    fun attach(savedInstanceState: android.os.Bundle? = null) {
         AppState.init(activity)
-        AppState.onConfigChanged = {
+        savedInstanceState?.let { // rotation: keep tab + search query instead of resetting to Movies/""
+            currentTab = MediaType.entries[it.getInt("tab", MediaType.entries.indexOf(currentTab)).coerceIn(0, MediaType.entries.size - 1)]
+            query = it.getString("query", "")
+        }
+        val listener: () -> Unit = {
             cache.clear(); signatures.clear() // mode may have flipped — never serve placeholder results as live
             refreshChrome()
             loadItems()
         }
+        configListener = listener
+        AppState.onConfigChanged = listener
         val t = AppTheme.current
 
         val root = FrameLayout(activity).withAurora()
@@ -92,6 +100,7 @@ class MainScreen(private val activity: Activity) {
                 query = q
                 loadItems()
             }
+            if (query.isNotEmpty()) search.input.setText(query) // restored search (see onSaveState)
             addView(search.root, lp(MATCH, WRAP, marginTopDp = t.space.md))
 
             pager = SwipePager(activity)
@@ -103,7 +112,7 @@ class MainScreen(private val activity: Activity) {
             }
             pager.onPageSelected = { i ->
                 currentTab = MediaType.entries[i]
-                nav.select(i)
+                if (i != nav.selected) nav.select(i) // recursion guard: only sync the nav when the page actually changed
                 if (navInitiated) { // scroll to top only for explicit nav taps, not swipes
                     pages[currentTab]?.scroll?.smoothScrollTo(0, 0)
                     navInitiated = false
@@ -122,7 +131,7 @@ class MainScreen(private val activity: Activity) {
                     listOf(NavItem("📺", "Series"), NavItem("🎥", "Movies"), NavItem("🎧", "Audiobooks")),
                     initial = MediaType.entries.indexOf(currentTab),
                     t
-                ) { i -> navInitiated = true; pager.goToPage(i) }
+                ) { i -> navInitiated = true; if (i != pager.current) pager.goToPage(i) } // recursion guard
                 addView(nav.root, lp(MATCH, WRAP))
             }
             addView(navWrap, lp(MATCH, WRAP))
@@ -159,9 +168,16 @@ class MainScreen(private val activity: Activity) {
     fun detach() {
         attached = false
         handler.removeCallbacks(startPoller)
-        poller.cancel()
-        WorkerScope.cancelAll()
-        AppState.onConfigChanged = null
+        poller.stop()
+        // no WorkerScope.cancelAll(): it interrupts OTHER screens' in-flight workers process-wide
+        if (AppState.onConfigChanged === configListener) AppState.onConfigChanged = null // CAS: rotation must not null the new screen's listener
+        configListener = null
+    }
+
+    /** Persisted across rotation via MainActivity.onSaveInstanceState. */
+    fun onSaveState(out: android.os.Bundle) {
+        out.putInt("tab", MediaType.entries.indexOf(currentTab))
+        out.putString("query", query)
     }
 
     private fun searchHint(): String =
@@ -197,7 +213,7 @@ class MainScreen(private val activity: Activity) {
         val skeleton = GridLayout(activity).apply { columnCount = GRID_COLUMNS; useDefaultMargins = true }
         repeat(9) {
             skeleton.addView(Skeleton(activity, 0, 150, t).apply {
-                layoutParams = GridLayout.LayoutParams().apply { width = 0; columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f) }
+                layoutParams = GridLayout.LayoutParams().apply { width = 0; height = activity.dp(150); columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f) } // explicit height: WRAP would measure 0 and the skeleton would be invisible
             })
         }
         val grid = GridLayout(activity).apply { columnCount = GRID_COLUMNS; useDefaultMargins = true }

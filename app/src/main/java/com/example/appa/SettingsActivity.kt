@@ -23,6 +23,8 @@ class SettingsActivity : Activity() {
     private lateinit var testResults: LinearLayout
     private lateinit var saveBtn: android.widget.TextView
     private lateinit var testBtn: android.widget.TextView
+    private var liveSwitch: android.widget.Switch? = null
+    private var fieldsFilled = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -80,8 +82,8 @@ class SettingsActivity : Activity() {
             field("Jellyfin URL", "jellyfinUrl", cfg.jellyfinUrl, "https://…", isUrl = true)
             field("Jellyfin API key", "jellyfinKey", cfg.jellyfinKey, secret = true)
 
-            form.addView(SwitchRow(this@SettingsActivity, "Use live services (otherwise placeholder mode)", cfg.liveMode) { liveChecked = it },
-                lp(MATCH, WRAP, marginTopDp = t.space.lg))
+            liveSwitch = SwitchRow(this@SettingsActivity, "Use live services (otherwise placeholder mode)", cfg.liveMode) { liveChecked = it }
+            form.addView(liveSwitch, lp(MATCH, WRAP, marginTopDp = t.space.lg))
 
             if (AppState.configWasWiped) {
                 form.addView(AppText(this@SettingsActivity, "⚠ Stored config was reset (device key changed) — please re-enter your keys.", TextStyle.BODY, color = t.colors.warning, t = t),
@@ -100,6 +102,27 @@ class SettingsActivity : Activity() {
         root.addView(body, FrameLayout.LayoutParams(MATCH, MATCH))
         setContentView(root)
         liveChecked = AppState.config.liveMode
+        fieldsFilled = AppState.configLoaded
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // config loads async: once it has landed, (re)fill the form so Save can never wipe stored keys with blanks
+        if (!fieldsFilled && AppState.configLoaded && ::fields.isInitialized) {
+            fieldsFilled = true
+            val cfg = AppState.config
+            fields["tmdbToken"]!!.setText(cfg.tmdbToken)
+            fields["sonarrUrl"]!!.setText(cfg.sonarrUrl)
+            fields["sonarrKey"]!!.setText(cfg.sonarrKey)
+            fields["radarrUrl"]!!.setText(cfg.radarrUrl)
+            fields["radarrKey"]!!.setText(cfg.radarrKey)
+            fields["prowlarrUrl"]!!.setText(cfg.prowlarrUrl)
+            fields["prowlarrKey"]!!.setText(cfg.prowlarrKey)
+            fields["jellyfinUrl"]!!.setText(cfg.jellyfinUrl)
+            fields["jellyfinKey"]!!.setText(cfg.jellyfinKey)
+            liveChecked = cfg.liveMode
+            liveSwitch?.isChecked = cfg.liveMode
+        }
     }
 
     private fun collect(): AppConfig = AppConfig(
@@ -116,6 +139,10 @@ class SettingsActivity : Activity() {
     )
 
     private fun save() {
+        if (!AppState.configLoaded) { // never save before the stored config has loaded — would wipe all keys
+            Toast.makeText(this, "Still loading saved settings — try again in a second", Toast.LENGTH_SHORT).show()
+            return
+        }
         val cfg = collect()
         // block saving with an invalid URL (missing scheme) — show where
         for (key in listOf("sonarrUrl", "radarrUrl", "prowlarrUrl", "jellyfinUrl")) {
@@ -127,7 +154,13 @@ class SettingsActivity : Activity() {
         }
         saveBtn.isEnabled = false
         saveBtn.text = "Saving…"
-        AppState.saveConfig(this, cfg) {
+        AppState.saveConfig(this, cfg) { ok ->
+            saveBtn.isEnabled = true
+            saveBtn.text = "Save"
+            if (!ok) {
+                Toast.makeText(this, "Save failed — keystore error, previous settings kept", Toast.LENGTH_LONG).show()
+                return@saveConfig
+            }
             // honest feedback: only claim live mode when it actually engaged
             Toast.makeText(
                 this,
@@ -140,6 +173,10 @@ class SettingsActivity : Activity() {
     }
 
     private fun test() {
+        if (!AppState.configLoaded) {
+            Toast.makeText(this, "Still loading saved settings — try again in a second", Toast.LENGTH_SHORT).show()
+            return
+        }
         val t = AppTheme.current
         val cfg = collect().normalized()
         if (!cfg.liveReady) {
@@ -156,7 +193,7 @@ class SettingsActivity : Activity() {
             }
         }
         WorkerScope.spawn {
-            val results = runCatching { LiveRepository(cfg).pingAll() }.getOrElse { emptyMap() }
+            val results = runCatching { RepositoryFactory.create(cfg)?.pingAll() ?: emptyMap() }.getOrElse { emptyMap() } // single construction rule
             Handler(Looper.getMainLooper()).post {
                 if (isFinishing || isDestroyed) return@post
                 names.forEach { name ->
