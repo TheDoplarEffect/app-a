@@ -81,14 +81,14 @@ class RequestsActivity : Activity() {
         super.onDestroy()
     }
 
-    private var lastSignature = ""
+    private var lastSignature: String? = null
 
     private fun render() {
         if (isFinishing || isDestroyed) return
         val t = AppTheme.current
         val requests = AppState.store.all().sortedByDescending { it.requestedAt }
         val signature = requests.joinToString("|") { "${it.id}:${it.status}:${it.external}" }
-        if (signature == lastSignature) return
+        if (signature == lastSignature) return // null sentinel: first render always draws
         lastSignature = signature
         list.removeAllViews()
         val renderable = requests.mapNotNull { r -> AppState.mediaById(r.mediaId)?.let { m -> r to m } }
@@ -135,7 +135,7 @@ class RequestsActivity : Activity() {
                             .setMessage("Remove the request for \"${media.title}\"?")
                             .setPositiveButton("Remove") { _, _ ->
                                 AppState.store.delete(r.id)
-                                lastSignature = ""
+                                lastSignature = null // force re-render after delete
                                 Toast.makeText(this@RequestsActivity, "Request removed", Toast.LENGTH_SHORT).show()
                                 render()
                             }

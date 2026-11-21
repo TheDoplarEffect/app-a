@@ -192,6 +192,7 @@ class RequestStoreCore(
     fun tick(now: Long = System.currentTimeMillis()): List<Request> = synchronized(lock) {
         val changed = mutableListOf<Request>()
         for (r in items.toList()) {
+            if (r.external.isNotBlank()) continue // live (*arr-backed) requests are advanced by LiveRepository only
             val next = StatusRules.next(r.status, now - r.statusUpdatedAt, pendingDelayMs, processingDelayMs)
             if (next != null) {
                 val i = items.indexOfFirst { it.id == r.id }

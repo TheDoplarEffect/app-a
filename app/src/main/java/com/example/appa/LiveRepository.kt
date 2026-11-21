@@ -144,14 +144,15 @@ class LiveRepository(private val cfg: AppConfig, private val http: HttpTransport
             runCatching { cachedMovieTmdbIds = jellyfin.movieTmdbIds() }
             runCatching { cachedSeriesTmdbIds = jellyfin.seriesTmdbIds() }
         }
-        val radarrStates = if (cfgN.hasRadarr) runCatching { radarr.movieStates() }.getOrDefault(emptyList()) else emptyList()
-        val radarrQueue = if (cfgN.hasRadarr) runCatching { radarr.queueMovieIds() }.getOrDefault(emptySet()) else emptySet()
-        val sonarrStates = if (cfgN.hasSonarr) runCatching { sonarr.seriesStates() }.getOrDefault(emptyList()) else emptyList()
-        val sonarrQueue = if (cfgN.hasSonarr) runCatching { sonarr.queueSeriesIds() }.getOrDefault(emptySet()) else emptySet()
+        // fetch each *arr as one Result: a transient failure must not downgrade statuses with empty data
+        val radarrRes = if (cfgN.hasRadarr) runCatching { radarr.movieStates() to radarr.queueMovieIds() } else null
+        val sonarrRes = if (cfgN.hasSonarr) runCatching { sonarr.seriesStates() to sonarr.queueSeriesIds() } else null
 
         val changed = mutableListOf<Request>()
-        val movieById = radarrStates.associateBy { it.radarrId }
-        val seriesById = sonarrStates.associateBy { it.sonarrId }
+        val movieById = radarrRes?.getOrNull()?.first?.associateBy { it.radarrId } ?: emptyMap()
+        val radarrQueue = radarrRes?.getOrNull()?.second ?: emptySet()
+        val seriesById = sonarrRes?.getOrNull()?.first?.associateBy { it.sonarrId } ?: emptyMap()
+        val sonarrQueue = sonarrRes?.getOrNull()?.second ?: emptySet()
         for (r in store.all()) {
             if (r.external.isBlank()) continue // local-only (audiobooks): simulated ticker handles it
             // fall back to the request's own snapshot so statuses don't freeze after a cold start
@@ -166,8 +167,14 @@ class LiveRepository(private val cfg: AppConfig, private val http: HttpTransport
             val ref = ExternalRef.parse(r.external) ?: continue
             val id = ref.id.toIntOrNull() ?: -1
             val (hasFile, inQueue) = when (ref.kind) {
-                "radarr" -> (movieById[id]?.hasFile ?: false) to (id in radarrQueue)
-                "sonarr" -> (seriesById[id]?.hasFiles ?: false) to (id in sonarrQueue)
+                "radarr" -> {
+                    if (radarrRes?.isFailure == true) continue // fetch failed: keep current status
+                    (movieById[id]?.hasFile ?: false) to (id in radarrQueue)
+                }
+                "sonarr" -> {
+                    if (sonarrRes?.isFailure == true) continue // fetch failed: keep current status
+                    (seriesById[id]?.hasFiles ?: false) to (id in sonarrQueue)
+                }
                 else -> false to false
             }
             val target = LiveStatus.compute(inJellyfin, hasFile, inQueue)

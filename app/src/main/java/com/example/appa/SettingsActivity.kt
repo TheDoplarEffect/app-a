@@ -168,6 +168,6 @@ class SettingsActivity : Activity() {
                 testBtn.isEnabled = true
                 testBtn.text = "Test connection"
             }
-        }.start()
+        }
     }
 }

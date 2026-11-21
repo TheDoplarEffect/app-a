@@ -20,7 +20,8 @@ object ImageLoader {
     }
     private val executor = ThreadPoolExecutor(
         2, 2, 30, TimeUnit.SECONDS,
-        LinkedBlockingQueue(24) // bounded: a burst of posters can't queue unbounded work
+        LinkedBlockingQueue(24), // bounded: a burst of posters can't queue unbounded work
+        ThreadPoolExecutor.DiscardOldestPolicy() // drop oldest queued poster instead of crashing on reject
     )
     private val main = Handler(Looper.getMainLooper())
 
