@@ -7,7 +7,9 @@ import android.os.Looper
 import android.util.LruCache
 import android.widget.ImageView
 import java.net.URL
-import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 
 /** Tiny async image loader (remote posters) with an in-memory LruCache. */
 object ImageLoader {
@@ -16,7 +18,10 @@ object ImageLoader {
     ) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
-    private val executor = Executors.newFixedThreadPool(3)
+    private val executor = ThreadPoolExecutor(
+        2, 2, 30, TimeUnit.SECONDS,
+        LinkedBlockingQueue(24) // bounded: a burst of posters can't queue unbounded work
+    )
     private val main = Handler(Looper.getMainLooper())
 
     fun load(url: String, view: ImageView) {
@@ -28,6 +33,7 @@ object ImageLoader {
         view.setImageDrawable(null)
         view.setBackgroundColor(AppTheme.current.colors.surfaceGlassStrong)
         executor.execute {
+            if (view.tag != url) return@execute // obsolete before we even hit the network
             val bmp = runCatching {
                 val resp = realHttp("GET", url, emptyMap(), null, true)
                 if (!resp.ok || resp.bytes.size > MAX_IMAGE_BYTES) return@runCatching null

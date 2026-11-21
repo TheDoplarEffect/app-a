@@ -1,5 +1,7 @@
 package com.example.appa
 
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.InetAddress
 import java.net.URL
@@ -17,6 +19,21 @@ data class Resp(val status: Int, val body: String, val bytes: ByteArray, val hea
 typealias HttpTransport = (method: String, url: String, headers: Map<String, String>, body: String?, followRedirects: Boolean) -> Resp
 
 private const val MAX_REDIRECTS = 5
+private const val MAX_BODY_BYTES = 8 * 1024 * 1024 // cap every response body (OOM guard)
+
+/** Read at most [cap] bytes from [s]. */
+private fun readCapped(s: InputStream, cap: Int): ByteArray {
+    val out = ByteArrayOutputStream(minOf(cap, 1 shl 20))
+    val tmp = ByteArray(8192)
+    var total = 0
+    while (total < cap) {
+        val n = s.read(tmp, 0, minOf(tmp.size, cap - total))
+        if (n < 0) break
+        out.write(tmp, 0, n)
+        total += n
+    }
+    return out.toByteArray()
+}
 /** Headers that must never be forwarded to a different host on redirect. */
 private val SENSITIVE_HEADERS = setOf("authorization", "x-api-key", "cookie", "proxy-authorization")
 
@@ -56,10 +73,12 @@ fun isSafeExternalUrl(url: String): Boolean {
  * would forward Authorization/X-Api-Key to any host): sensitive headers are
  * dropped when the redirect crosses hosts.
  */
-val realHttp: HttpTransport = { method, url, headers, body, followRedirects ->
+val realHttp: HttpTransport = { method0, url, headers0, body0, followRedirects ->
+    var method = method0
+    var body = body0
     runCatching {
         var currentUrl = url
-        var currentHeaders = headers
+        var currentHeaders = headers0
         var resp: Resp
         var hops = 0
         while (true) {
@@ -78,7 +97,7 @@ val realHttp: HttpTransport = { method, url, headers, body, followRedirects ->
                 }
                 val status = conn.responseCode
                 val stream = if (status >= 400) conn.errorStream else conn.inputStream
-                val bytes = stream?.use { it.readBytes() } ?: ByteArray(0)
+                val bytes = stream?.use { readCapped(it, MAX_BODY_BYTES) } ?: ByteArray(0)
                 // headerFields contains a null key for the status line — drop it (NPE guard)
                 resp = Resp(status, String(bytes, Charsets.UTF_8), bytes,
                     conn.headerFields.filterKeys { it != null }.mapValues { it.value ?: emptyList() })
@@ -88,11 +107,17 @@ val realHttp: HttpTransport = { method, url, headers, body, followRedirects ->
             val loc = if (resp.status in 300..399) resp.header("Location") else null
             if (followRedirects && loc != null && hops < MAX_REDIRECTS) {
                 val next = runCatching { URL(URL(currentUrl), loc).toString() }.getOrNull()
-                if (next == null) break
+                // re-validate every hop: a redirect must stay http(s) and off loopback/metadata
+                if (next == null || !isSafeExternalUrl(next)) break
                 if (!sameHost(currentUrl, next))
                     currentHeaders = currentHeaders.filterKeys { !SENSITIVE_HEADERS.contains(it.lowercase()) }
                 currentUrl = next
                 hops++
+                if (resp.status == 301 || resp.status == 302 || resp.status == 303) {
+                    // per RFC 7231 these rewrite the method to GET and drop the body
+                    method = "GET"
+                    body = null
+                }
                 continue
             }
             break

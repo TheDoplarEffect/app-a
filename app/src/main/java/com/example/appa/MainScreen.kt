@@ -9,7 +9,6 @@ import android.widget.FrameLayout
 import android.widget.GridLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
-import java.util.Collections
 
 /**
  * Main screen (organism). Three tabs live as pages in a [SwipePager] — swipe
@@ -29,6 +28,7 @@ class MainScreen(private val activity: Activity) {
 
     private class Page(val root: FrameLayout, val skeleton: GridLayout, val scroll: ScrollView, val grid: GridLayout, val empty: View) {
         var error: View? = null
+        var inlineError: View? = null
     }
 
     private var currentTab = MediaType.MOVIES
@@ -44,7 +44,7 @@ class MainScreen(private val activity: Activity) {
     private var loadJob = 0
     private var attached = true
     private var navInitiated = false
-    private val workers = Collections.synchronizedList(mutableListOf<Thread>())
+    private val startPoller = Runnable { poller.start() }
     private val poller = StatusPoller { changed, _ ->
         if (changed) {
             renderCurrent(animate = false)
@@ -56,15 +56,15 @@ class MainScreen(private val activity: Activity) {
     private val cache = Companion.cache
     private val signatures = Companion.signatures
 
-    private fun spawnWorker(block: () -> Unit) {
-        val th = Thread(block)
-        workers.add(th)
-        th.start()
-    }
+    private fun spawnWorker(block: () -> Unit) = WorkerScope.spawn(block)
 
     fun attach() {
         AppState.init(activity)
-        AppState.onConfigChanged = { refreshChrome(); loadItems() }
+        AppState.onConfigChanged = {
+            cache.clear(); signatures.clear() // mode may have flipped — never serve placeholder results as live
+            refreshChrome()
+            loadItems()
+        }
         val t = AppTheme.current
 
         val root = FrameLayout(activity).withAurora()
@@ -132,7 +132,7 @@ class MainScreen(private val activity: Activity) {
 
         loadItems()
         renderRequestsBadge()
-        handler.postDelayed({ poller.start() }, 1000)
+        handler.postDelayed(startPoller, 1000)
     }
 
     /** Called from MainActivity.onResume — re-render chrome in case config changed while away. */
@@ -144,20 +144,23 @@ class MainScreen(private val activity: Activity) {
     /** Called from MainActivity.onStart. */
     fun onStart() {
         attached = true
+        handler.removeCallbacks(startPoller)
         poller.start()
     }
 
     /** Called from MainActivity.onStop — pause polling while covered. */
     fun onStop() {
         attached = false
+        handler.removeCallbacks(startPoller)
         poller.stop()
     }
 
     /** Called from MainActivity.onDestroy — stops the poller and interrupts workers. */
     fun detach() {
         attached = false
+        handler.removeCallbacks(startPoller)
         poller.cancel()
-        synchronized(workers) { workers.forEach { it.interrupt() }; workers.clear() }
+        WorkerScope.cancelAll()
         AppState.onConfigChanged = null
     }
 
@@ -168,10 +171,7 @@ class MainScreen(private val activity: Activity) {
     private fun refreshChrome() {
         if (!::topBar.isInitialized) return
         val t = AppTheme.current
-        // top bar subtitle is the second text child of the title column
-        val titleCol = (topBar.getChildAt(0) as LinearLayout).getChildAt(0) as LinearLayout
-        val sub = titleCol.getChildAt(1) as? android.widget.TextView
-        sub?.text = if (AppState.liveMode) "Live" else "Placeholder"
+        topBar.setSubtitle(if (AppState.liveMode) "Live" else "Placeholder")
         if (::banner.isInitialized) {
             val live = AppState.liveMode
             val (text, color) = if (live)
@@ -191,7 +191,7 @@ class MainScreen(private val activity: Activity) {
         imm.hideSoftInputFromWindow(activity.window.decorView.windowToken, 0)
     }
 
-    private fun cacheKey(tab: MediaType, q: String) = "$tab|$q"
+    private fun cacheKey(tab: MediaType, q: String) = (if (AppState.liveMode) "L" else "P") + "|$tab|$q"
 
     private fun buildPage(type: MediaType, t: DesignTokens): Page {
         val skeleton = GridLayout(activity).apply { columnCount = GRID_COLUMNS; useDefaultMargins = true }
@@ -202,7 +202,7 @@ class MainScreen(private val activity: Activity) {
         }
         val grid = GridLayout(activity).apply { columnCount = GRID_COLUMNS; useDefaultMargins = true }
         val scroll = ScrollView(activity).apply { addView(grid) }
-        val empty = EmptyState(activity, "🔍", "Nothing here", "No titles match your search.", t)
+        val empty = EmptyState(activity, "🔍", "Nothing here", "", t)
         val root = FrameLayout(activity)
         root.addView(skeleton, FrameLayout.LayoutParams(MATCH, MATCH))
         root.addView(scroll, FrameLayout.LayoutParams(MATCH, MATCH))
@@ -221,12 +221,30 @@ class MainScreen(private val activity: Activity) {
 
     private fun clearError(p: Page) {
         p.error?.let { p.root.removeView(it); p.error = null }
+        p.inlineError?.let { p.root.removeView(it); p.inlineError = null }
         if (p.empty.parent == null) p.root.addView(p.empty, FrameLayout.LayoutParams(MATCH, MATCH))
+    }
+
+    /** Small banner at the top of the page; the grid below stays untouched (stale content stays visible). */
+    private fun showInlineError(p: Page, error: Throwable?) {
+        clearError(p)
+        val t = AppTheme.current
+        val v = AppText(activity, "⚠ Refresh failed: ${error?.message?.take(80) ?: "network error"} — showing cached results", TextStyle.LABEL, color = t.colors.warning, t = t).apply {
+            val px = activity.dp(t.space.md); val py = activity.dp(t.space.xs)
+            setPadding(px, py, px, py)
+            background = withAlpha(t.colors.warning, 0.18f).let { android.graphics.drawable.ColorDrawable(it) }
+        }
+        p.root.addView(v, FrameLayout.LayoutParams(MATCH, WRAP, android.view.Gravity.TOP))
+        p.inlineError = v
     }
 
     private fun evictCache() {
         val cutoff = System.currentTimeMillis() - CACHE_MAX_AGE_MS
         cache.entries.removeAll { it.value.first < cutoff }
+        if (cache.size > CACHE_MAX_ENTRIES) { // LRU-ish: drop the oldest half
+            val oldest = cache.entries.sortedBy { it.value.first }.take(cache.size - CACHE_MAX_ENTRIES)
+            oldest.forEach { cache.remove(it.key) }
+        }
         signatures.entries.removeAll { !cache.containsKey(it.key) }
     }
 
@@ -256,7 +274,8 @@ class MainScreen(private val activity: Activity) {
             showLoading(p, loading = true, hasItems = true)
         } else {
             clearError(p)
-            showLoading(p, loading = true, hasItems = false)
+            val hasItems = p.grid.childCount > 0 // keep previous results visible during search
+            showLoading(p, loading = true, hasItems = hasItems)
         }
         spawnWorker {
             val repo = AppState.repo
@@ -271,7 +290,9 @@ class MainScreen(private val activity: Activity) {
                 if (myJob != loadJob || !attached) return@post
                 val items = result.getOrElse { null }
                 if (items == null) {
-                    showError(p, result.exceptionOrNull())
+                    val stale = cache[key]?.second
+                    if (!stale.isNullOrEmpty()) showInlineError(p, result.exceptionOrNull())
+                    else showError(p, result.exceptionOrNull())
                     return@post
                 }
                 clearError(p)
@@ -328,13 +349,18 @@ class MainScreen(private val activity: Activity) {
         val t = AppTheme.current
         items.forEach { m ->
             p.grid.addView(PosterCard(activity, m, status = AppState.requestFor(m.id)?.status, t = t) {
+                hideKeyboard()
                 activity.openRisingTo(DetailActivity::class.java, "mediaId", m.id)
             })
         }
-        showLoading(p, loading = false, hasItems = items.isNotEmpty())
-        if (items.isNotEmpty()) {
-            if (animate) p.grid.staggerIn() else p.grid.fadeIn(durationMs = t.motion.shortMs)
+        if (items.isEmpty()) {
+            val e = p.empty as LinearLayout
+            (e.getChildAt(1) as android.widget.TextView).text = "Nothing here"
+            (e.getChildAt(2) as android.widget.TextView).text =
+                if (query.isBlank()) "Start typing to search, or browse the trending titles." else "No titles match your search."
         }
+        showLoading(p, loading = false, hasItems = items.isNotEmpty())
+        if (items.isNotEmpty() && animate) p.grid.staggerIn() // no re-animation on data ticks
     }
 
     private fun renderRequestsBadge() {
@@ -345,6 +371,7 @@ class MainScreen(private val activity: Activity) {
         const val GRID_COLUMNS = 3
         const val CACHE_TTL_MS = 45_000L
         const val CACHE_MAX_AGE_MS = 5 * 60_000L
+        const val CACHE_MAX_ENTRIES = 24
         // process-level: survives activity recreation (rotation)
         val cache = mutableMapOf<String, Pair<Long, List<Media>>>()      // key "tab|query" -> (fetchedAt, items)
         val signatures = mutableMapOf<String, String>()                    // key -> grid signature

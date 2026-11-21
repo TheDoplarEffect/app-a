@@ -150,9 +150,14 @@ class LiveRepository(private val cfg: AppConfig, private val http: HttpTransport
         val sonarrQueue = if (cfgN.hasSonarr) runCatching { sonarr.queueSeriesIds() }.getOrDefault(emptySet()) else emptySet()
 
         val changed = mutableListOf<Request>()
+        val movieById = radarrStates.associateBy { it.radarrId }
+        val seriesById = sonarrStates.associateBy { it.sonarrId }
         for (r in store.all()) {
             if (r.external.isBlank()) continue // local-only (audiobooks): simulated ticker handles it
-            val media = mediaById(r.mediaId) ?: continue
+            // fall back to the request's own snapshot so statuses don't freeze after a cold start
+            val media = mediaById(r.mediaId)
+                ?: store.byMediaId(r.mediaId)?.snapshot?.let { sn -> MediaSnapshot.fromJson(sn)?.toMedia(r.mediaId) }
+                ?: continue
             val inJellyfin = when (media.type) {
                 MediaType.MOVIES -> media.externalId in cachedMovieTmdbIds
                 MediaType.SERIES -> media.externalId in cachedSeriesTmdbIds
@@ -161,8 +166,8 @@ class LiveRepository(private val cfg: AppConfig, private val http: HttpTransport
             val ref = ExternalRef.parse(r.external) ?: continue
             val id = ref.id.toIntOrNull() ?: -1
             val (hasFile, inQueue) = when (ref.kind) {
-                "radarr" -> (radarrStates.firstOrNull { it.radarrId == id }?.hasFile ?: false) to (id in radarrQueue)
-                "sonarr" -> (sonarrStates.firstOrNull { it.sonarrId == id }?.hasFiles ?: false) to (id in sonarrQueue)
+                "radarr" -> (movieById[id]?.hasFile ?: false) to (id in radarrQueue)
+                "sonarr" -> (seriesById[id]?.hasFiles ?: false) to (id in sonarrQueue)
                 else -> false to false
             }
             val target = LiveStatus.compute(inJellyfin, hasFile, inQueue)
