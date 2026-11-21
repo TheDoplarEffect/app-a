@@ -200,7 +200,7 @@ class ProwlarrClient(private val baseUrl: String, private val apiKey: String, pr
  * The write-path lookups THROW on failure — a silent "/tv"/"1" default would
  * produce a wrong write with no error (Ousterhout: don't mask exceptions).
  */
-private abstract class ArrClient(
+abstract class ArrClient(
     protected val baseUrl: String,
     apiKey: String,
     protected val http: HttpTransport,
