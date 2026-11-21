@@ -26,20 +26,20 @@ class TmdbClient(private val token: String, private val http: HttpTransport = re
     private fun get(path: String, params: String = ""): JsonElement =
         httpGetJson("$base$path?$params", headers, http)
 
-    fun search(query: String, type: MediaType): List<Media> {
+    fun search(query: String, type: MediaType, page: Int = 1): List<Media> {
         val q = qenc(query)
         val el = when (type) {
-            MediaType.MOVIES -> get("/search/movie", "query=$q&include_adult=false")
-            MediaType.SERIES -> get("/search/tv", "query=$q&include_adult=false")
+            MediaType.MOVIES -> get("/search/movie", "query=$q&include_adult=false&page=$page")
+            MediaType.SERIES -> get("/search/tv", "query=$q&include_adult=false&page=$page")
             MediaType.AUDIOBOOKS -> return emptyList() // audiobooks come from Open Library
         }
         return el.obj()["results"].arr().mapNotNull { it.toMedia(type) }
     }
 
-    fun trending(type: MediaType): List<Media> {
+    fun trending(type: MediaType, page: Int = 1): List<Media> {
         val el = when (type) {
-            MediaType.MOVIES -> get("/trending/movie/week")
-            MediaType.SERIES -> get("/trending/tv/week")
+            MediaType.MOVIES -> get("/trending/movie/week", "page=$page")
+            MediaType.SERIES -> get("/trending/tv/week", "page=$page")
             MediaType.AUDIOBOOKS -> return emptyList()
         }
         return el.obj()["results"].arr().mapNotNull { it.toMedia(type) }
@@ -111,8 +111,9 @@ class TmdbClient(private val token: String, private val http: HttpTransport = re
 class OpenLibraryClient(private val http: HttpTransport = realHttp) {
     private val base = "https://openlibrary.org"
 
-    fun search(query: String): List<Media> {
-        val el = httpGetJson("$base/search.json?q=${qenc(query)}&limit=30&fields=key,title,author_name,first_publish_year,cover_i,subject,ratings_average", emptyMap(), http)
+    fun search(query: String, page: Int = 1, limit: Int = 20): List<Media> {
+        val offset = (page.coerceAtLeast(1) - 1) * limit
+        val el = httpGetJson("$base/search.json?q=${qenc(query)}&limit=$limit&offset=$offset&fields=key,title,author_name,first_publish_year,cover_i,subject,ratings_average", emptyMap(), http)
         return el.obj()["docs"].arr().mapNotNull { doc ->
             val o = doc.obj()
             val key = o["key"].str()
@@ -140,7 +141,7 @@ class OpenLibraryClient(private val http: HttpTransport = realHttp) {
     }
 
     /** Default browse list for the audiobooks tab when the search box is empty. */
-    fun browse(): List<Media> = search("bestselling audiobooks")
+    fun browse(page: Int = 1): List<Media> = search("bestselling audiobooks", page)
 }
 
 // ---------------------------------------------------------------- Prowlarr (magnets)

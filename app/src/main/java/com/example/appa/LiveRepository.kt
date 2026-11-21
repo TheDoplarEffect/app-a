@@ -68,19 +68,19 @@ class LiveRepository(private val cfg: AppConfig, private val http: HttpTransport
 
     // ---------------- browse / search ----------------
 
-    fun browse(type: MediaType): List<Media> = when (type) {
-        MediaType.MOVIES -> tmdb.trending(MediaType.MOVIES)
-        MediaType.SERIES -> tmdb.trending(MediaType.SERIES)
-        MediaType.AUDIOBOOKS -> books.browse()
+    fun browse(type: MediaType, page: Int = 1): List<Media> = when (type) {
+        MediaType.MOVIES -> tmdb.trending(MediaType.MOVIES, page)
+        MediaType.SERIES -> tmdb.trending(MediaType.SERIES, page)
+        MediaType.AUDIOBOOKS -> books.browse(page)
     }.map { markAvailability(it) }
 
-    fun search(query: String): List<Media> {
+    fun search(query: String, page: Int = 1): List<Media> {
         val q = query.trim()
         if (q.isEmpty()) return emptyList()
         val results = mutableListOf<Media>()
-        results += tmdb.search(q, MediaType.MOVIES)
-        results += tmdb.search(q, MediaType.SERIES)
-        results += books.search(q)
+        results += tmdb.search(q, MediaType.MOVIES, page)
+        results += tmdb.search(q, MediaType.SERIES, page)
+        results += books.search(q, page)
         return results.map { markAvailability(it) }
     }
 
