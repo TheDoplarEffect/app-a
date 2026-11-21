@@ -89,11 +89,12 @@ val realHttp: HttpTransport = { method0, url, headers0, body0, followRedirects -
                 conn.readTimeout = 20_000
                 conn.instanceFollowRedirects = false // manual, see above
                 currentHeaders.forEach { (k, v) -> conn.setRequestProperty(k, v) }
-                if (body != null && method != "GET" && method != "HEAD") {
+                val bodyNow = body
+                if (bodyNow != null && method != "GET" && method != "HEAD") {
                     conn.doOutput = true
                     if (currentHeaders.keys.none { it.equals("Content-Type", ignoreCase = true) })
                         conn.setRequestProperty("Content-Type", "application/json")
-                    conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+                    conn.outputStream.use { it.write(bodyNow.toByteArray(Charsets.UTF_8)) }
                 }
                 val status = conn.responseCode
                 val stream = if (status >= 400) conn.errorStream else conn.inputStream
