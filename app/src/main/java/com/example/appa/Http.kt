@@ -37,13 +37,11 @@ private fun readCapped(s: InputStream, cap: Int): ByteArray {
 /** Headers that must never be forwarded to a different host on redirect. */
 private val SENSITIVE_HEADERS = setOf("authorization", "x-api-key", "cookie", "proxy-authorization")
 
-private fun hostOf(url: String): String? = runCatching { URL(url).host }.getOrNull()
-
-private fun sameHost(a: String, b: String): Boolean {
-    val ha = hostOf(a) ?: return false
-    val hb = hostOf(b) ?: return false
-    return ha.equals(hb, ignoreCase = true)
-}
+/** Same origin = scheme + host + port: a same-host redirect to ANOTHER port must not keep credentials. */
+private fun sameOrigin(a: String, b: String): Boolean = runCatching {
+    val ua = URL(a); val ub = URL(b)
+    ua.protocol == ub.protocol && ua.host.equals(ub.host, ignoreCase = true) && ua.port == ub.port
+}.getOrElse { false }
 
 /**
  * SSRF guard for URLs that come from external services (e.g. a Prowlarr
@@ -77,6 +75,8 @@ val realHttp: HttpTransport = { method0, url, headers0, body0, followRedirects -
     var method = method0
     var body = body0
     runCatching {
+        // one guard at the entry point covers every caller (posters, *arr, Prowlarr download urls)
+        if (!isSafeExternalUrl(url)) return@runCatching Resp(0, "blocked url", ByteArray(0), emptyMap())
         var currentUrl = url
         var currentHeaders = headers0
         var resp: Resp
@@ -110,7 +110,7 @@ val realHttp: HttpTransport = { method0, url, headers0, body0, followRedirects -
                 val next = runCatching { URL(URL(currentUrl), loc).toString() }.getOrNull()
                 // re-validate every hop: a redirect must stay http(s) and off loopback/metadata
                 if (next == null || !isSafeExternalUrl(next)) break
-                if (!sameHost(currentUrl, next))
+                if (!sameOrigin(currentUrl, next))
                     currentHeaders = currentHeaders.filterKeys { !SENSITIVE_HEADERS.contains(it.lowercase()) }
                 currentUrl = next
                 hops++
@@ -137,8 +137,10 @@ fun magnetFromDownloadUrl(downloadUrl: String, http: HttpTransport = realHttp): 
     val resp = http("GET", downloadUrl, mapOf("User-Agent" to "Mozilla/5.0"), null, false)
     if (resp.status in 300..399) {
         val loc = resp.header("Location") ?: return downloadUrl
-        val l = loc.lowercase()
-        if (l.startsWith("magnet:") || l.contains(".torrent")) return loc
+        if (loc.lowercase().startsWith("magnet:")) return loc // magnets are safe by construction
+        // anything else must resolve to a validated external .torrent URL — never hand out a random page
+        val resolved = runCatching { URL(URL(downloadUrl), loc).toString() }.getOrNull()
+        if (resolved != null && resolved.lowercase().contains(".torrent") && isSafeExternalUrl(resolved)) return resolved
         return downloadUrl
     }
     return downloadUrl

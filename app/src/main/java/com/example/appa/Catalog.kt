@@ -142,12 +142,14 @@ class RequestStoreCore(
     private val load: () -> String?,
     private val save: (String) -> Unit,
     val pendingDelayMs: Long = 4_000L,
-    val processingDelayMs: Long = 10_000L
+    val processingDelayMs: Long = 10_000L,
+    private val onCorrupt: ((String) -> Unit)? = null,
+    deferLoad: Boolean = false
 ) {
     private val lock = Any()
     private val items = mutableListOf<Request>()
 
-    init { reload() }
+    init { if (!deferLoad) reload() } // deferLoad: caller reloads off the main thread
 
     fun all(): List<Request> = synchronized(lock) { items.toList() }
     fun byMediaId(mediaId: String): Request? = synchronized(lock) { items.firstOrNull { it.mediaId == mediaId } }
@@ -210,7 +212,11 @@ class RequestStoreCore(
     fun reload() {
         synchronized(lock) {
             val text = load() ?: return@synchronized
-            val parsed = parseAll(text) ?: return@synchronized // corrupt: keep existing items, never wipe
+            val parsed = parseAll(text)
+            if (parsed == null) {
+                onCorrupt?.invoke(text) // quarantine the corrupt raw text so the next persist can't clobber it
+                return@synchronized // corrupt: keep existing items, never wipe
+            }
             items.clear()
             items.addAll(parsed)
         }
@@ -247,23 +253,22 @@ class RequestStoreCore(
         return out
     }
 
-    private val persistIo = Executors.newSingleThreadExecutor()
+    private val persistIo = Executors.newSingleThreadExecutor { r -> Thread(r, "persist-io").apply { isDaemon = true } }
 
     private fun persist() {
-        val text = synchronized(lock) {
-            buildJsonArray {
-                for (r in items) add(buildJsonObject {
-                    put("id", r.id)
-                    put("mediaId", r.mediaId)
-                    put("requestedAt", r.requestedAt)
-                    put("status", r.status.name)
-                    put("statusUpdatedAt", r.statusUpdatedAt)
-                    put("external", r.external)
-                    put("snapshot", r.snapshot)
-                })
-            }.toString()
-        }
-        persistIo.execute { save(text) } // disk write off the caller (often main) thread
+        val snapshot = synchronized(lock) { items.toList() } // serialize OUTSIDE the lock: reads never block on JSON
+        val text = buildJsonArray {
+            for (r in snapshot) add(buildJsonObject {
+                put("id", r.id)
+                put("mediaId", r.mediaId)
+                put("requestedAt", r.requestedAt)
+                put("status", r.status.name)
+                put("statusUpdatedAt", r.statusUpdatedAt)
+                put("external", r.external)
+                put("snapshot", r.snapshot)
+            })
+        }.toString()
+        persistIo.execute { runCatching { save(text) } } // disk write off the caller (often main) thread
     }
 }
 
@@ -274,7 +279,7 @@ object Catalog {
         "Drama", "Fantasy", "Horror", "Mystery", "Romance", "Sci-Fi",
         "Thriller", "Western", "Family", "History"
     )
-    private val colorPairs = listOf(
+    internal val colorPairs = listOf(
         "#1f6feb" to "#8250df", "#d29922" to "#fb6f92", "#1a7f37" to "#2da44e",
         "#8250df" to "#bf3989", "#9a6700" to "#d29922", "#0969da" to "#57ab5a",
         "#cf222e" to "#8250df", "#0550ae" to "#f778ba", "#116329" to "#aeaefe",

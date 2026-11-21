@@ -67,6 +67,9 @@ class AuroraBackground(context: Context) : View(context) {
     override fun onDetachedFromWindow() {
         anim?.cancel()
         anim = null
+        bmp?.let { if (!it.isRecycled) it.recycle() } // no bitmap leak across activity re-creation
+        bmp = null
+        blobCanvas = null
         super.onDetachedFromWindow()
     }
 

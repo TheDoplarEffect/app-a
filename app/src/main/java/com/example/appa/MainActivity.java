@@ -15,7 +15,7 @@ public class MainActivity extends Activity {
             StrictMode.setThreadPolicy(new StrictMode.ThreadPolicy.Builder()
                     .detectAll().penaltyLog().build());
         }
-        screen = MainScreenKt.showMainScreen(this);
+        screen = MainScreenKt.showMainScreen(this, b);
     }
 
     @Override protected void onStart() {
@@ -31,6 +31,11 @@ public class MainActivity extends Activity {
     @Override protected void onStop() {
         if (screen != null) screen.onStop();
         super.onStop();
+    }
+
+    @Override protected void onSaveInstanceState(Bundle outState) {
+        super.onSaveInstanceState(outState);
+        if (screen != null) screen.onSaveState(outState); // keep tab + search query across rotation
     }
 
     @Override protected void onDestroy() {

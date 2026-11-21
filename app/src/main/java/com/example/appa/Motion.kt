@@ -101,9 +101,10 @@ fun ViewGroup.staggerIn(stepMs: Long = 45): ViewGroup {
 fun View.withPressScale(): View {
     setOnTouchListener { v, ev ->
         when (ev.actionMasked) {
-            MotionEvent.ACTION_DOWN -> if (v.context.reduceMotion()) { v.scaleX = 0.97f; v.scaleY = 0.97f } else v.animate().scaleX(0.94f).scaleY(0.94f)
+            // reduced motion: no scale at all (previously an inconsistent 0.97 snap)
+            MotionEvent.ACTION_DOWN -> if (!v.context.reduceMotion()) v.animate().scaleX(0.94f).scaleY(0.94f)
                 .setDuration(motion().instantMs).setInterpolator(FastOutSlowIn).start()
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> v.animate().scaleX(1f).scaleY(1f)
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> if (!v.context.reduceMotion()) v.animate().scaleX(1f).scaleY(1f)
                 .setDuration(motion().shortMs).setInterpolator(EmphasizedOvershoot).start()
         }
         false // don't consume; click still fires

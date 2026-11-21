@@ -30,9 +30,8 @@ object ImageLoader {
         cache.get(url)?.let { view.setImageBitmap(it); view.tag = url; return }
         if (view.tag == url && view.drawable != null) return // already loading/showing this url
         view.tag = url
-        // neutral placeholder while loading (no white flash)
+        // no opaque placeholder: the GradientPoster behind the ImageView shows through (no gray flash)
         view.setImageDrawable(null)
-        view.setBackgroundColor(AppTheme.current.colors.surfaceGlassStrong)
         executor.execute {
             if (view.tag != url) return@execute // obsolete before we even hit the network
             val bmp = runCatching {
@@ -53,7 +52,7 @@ object ImageLoader {
                         view.setImageBitmap(bmp)
                         view.background = null
                     } else {
-                        view.setBackgroundColor(AppTheme.current.colors.surfaceGlassStrong)
+                        view.setImageDrawable(null) // keep the gradient behind visible on failure
                     }
                 }
             }
