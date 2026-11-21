@@ -48,12 +48,12 @@ class IconView(ctx: Context, val kind: IconKind, sizeDp: Int = 24, color: Int = 
         c.scale(s, s)
         when (kind) {
             IconKind.SERIES -> { // monitor + play
-                p.reset(); p.addRoundRect(3f, 5f, 21f, 16f, 2f, 2f); c.drawPath(p, stroke)
+                p.reset(); p.addRoundRect(3f, 5f, 21f, 16f, 2f, 2f, Path.Direction.CW); c.drawPath(p, stroke)
                 p.reset(); p.moveTo(9f, 17f); p.lineTo(15f, 17f); p.lineTo(12f, 20f); p.close(); c.drawPath(p, stroke)
                 p.reset(); p.moveTo(10.5f, 8.5f); p.lineTo(15f, 10.5f); p.lineTo(10.5f, 12.5f); p.close(); c.drawPath(p, fill)
             }
             IconKind.MOVIES -> { // clapperboard
-                p.reset(); p.addRoundRect(3f, 9f, 21f, 20f, 2f, 2f); c.drawPath(p, stroke)
+                p.reset(); p.addRoundRect(3f, 9f, 21f, 20f, 2f, 2f, Path.Direction.CW); c.drawPath(p, stroke)
                 p.reset(); p.moveTo(3f, 9f); p.lineTo(5f, 4f); p.lineTo(21f, 4f); p.lineTo(19f, 9f); p.close(); c.drawPath(p, stroke)
                 p.reset(); p.moveTo(8.5f, 4.6f); p.lineTo(6.8f, 8.6f); c.drawPath(p, stroke)
                 p.reset(); p.moveTo(13.5f, 4.6f); p.lineTo(11.8f, 8.6f); c.drawPath(p, stroke)
@@ -61,8 +61,8 @@ class IconView(ctx: Context, val kind: IconKind, sizeDp: Int = 24, color: Int = 
             }
             IconKind.AUDIOBOOKS -> { // headphones
                 p.reset(); p.moveTo(5f, 16f); p.arcTo(5f, 7f, 19f, 17f, 180f, 180f, false); c.drawPath(p, stroke)
-                p.reset(); p.addRoundRect(3.5f, 14f, 7.5f, 20f, 2f, 2f); c.drawPath(p, stroke)
-                p.reset(); p.addRoundRect(16.5f, 14f, 20.5f, 20f, 2f, 2f); c.drawPath(p, stroke)
+                p.reset(); p.addRoundRect(3.5f, 14f, 7.5f, 20f, 2f, 2f, Path.Direction.CW); c.drawPath(p, stroke)
+                p.reset(); p.addRoundRect(16.5f, 14f, 20.5f, 20f, 2f, 2f, Path.Direction.CW); c.drawPath(p, stroke)
             }
             IconKind.MENU -> { // hamburger
                 for (y in floatArrayOf(6f, 12f, 18f)) {

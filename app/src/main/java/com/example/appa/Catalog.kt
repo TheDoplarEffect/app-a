@@ -337,8 +337,7 @@ object Catalog {
     private fun buildType(type: MediaType, label: String, count: Int): List<Media> =
         (1..count).map { i -> buildOne(type, label, i) }
 
-    private fun buildOne(type: MediaType, label: String, i: Int): Media {
-        run {
+    private fun buildOne(type: MediaType, label: String, i: Int): Media = run {
             val seed = Random("${type.slug}-$i".hashCode().toLong())
             val title = "Placeholder $label ${"%02d".format(i)}"
             val id = "${type.slug}-${"%02d".format(i)}"
@@ -365,7 +364,6 @@ object Catalog {
                 durationHours = if (type == MediaType.AUDIOBOOKS) 4.0 + seed.nextInt(20) + seed.nextInt(10) / 10.0 else null,
                 available = i % 6 == 0
             )
-        }
     }
 
     private fun magnetsFor(m: Media): List<Magnet> {

@@ -102,7 +102,7 @@ fun View.pressable(): View {
 
 // ------------------------------------------------------------------ top bar
 
-data class TopBarAction(val icon: String, val contentDescription: String = icon, var badge: Int = 0, val onClick: () -> Unit, val iconKind: IconKind? = null)
+data class TopBarAction(val icon: String, val contentDescription: String = icon, var badge: Int = 0, val iconKind: IconKind? = null, val onClick: () -> Unit)
 
 /**
  * Top app bar atom: large title + optional subtitle on the left, circular
@@ -118,7 +118,7 @@ fun AppTopBar(
 ): LinearLayout = col(ctx) {
     row(ctx) {
         gravity = Gravity.CENTER_VERTICAL
-        if (leading != null) addView(CircleIconButton(ctx, leading.icon, 0, t, leading.contentDescription, leading.onClick), lp(WRAP, WRAP, marginStartDp = 0))
+        if (leading != null) addView(CircleIconButton(ctx, leading.icon, 0, t, leading.contentDescription, leading.onClick, leading.iconKind), lp(WRAP, WRAP, marginStartDp = 0))
         col(ctx) {
             addView(AppText(ctx, title, TextStyle.HEADLINE, t = t))
             if (subtitle != null) addView(AppText(ctx, subtitle, TextStyle.LABEL, t = t).apply { tag = "subtitle" })
@@ -151,7 +151,7 @@ fun CircleIconButton(
     return FrameLayout(ctx).apply {
         glass(t.radius.pill, t = t)
         if (iconKind != null) {
-            addView(IconView(ctx, iconKind, 22, t.colors.textPrimary).apply { gravity = Gravity.CENTER },
+            addView(IconView(ctx, iconKind, 22, t.colors.textPrimary),
                 FrameLayout.LayoutParams(size, size, Gravity.CENTER))
         } else {
             addView(AppText(ctx, icon, TextStyle.TITLE, t = t).apply { gravity = Gravity.CENTER },

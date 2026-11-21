@@ -133,7 +133,7 @@ class RequestsActivity : Activity() {
                     StatusPill(this@RequestsActivity, media, r.status, t)?.let { pill ->
                         addView(pill, LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(8) })
                     }
-                    addView(CircleIconButton(this@RequestsActivity, "🗑", 0, t, contentDescription = "Remove request for ${media.title}") {
+                    addView(CircleIconButton(this@RequestsActivity, "🗑", 0, t, contentDescription = "Remove request for ${media.title}", onClick = {
                         val d = AlertDialog.Builder(this@RequestsActivity)
                             .setTitle("Remove request?")
                             .setMessage("Remove the request for \"${media.title}\"?")
@@ -146,7 +146,7 @@ class RequestsActivity : Activity() {
                             .setNegativeButton("Keep", null)
                             .show()
                         dialogs.add(d)
-                    }, LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(8) })
+                    }), LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(8) })
                 }
                 addView(rrow, lp(MATCH, WRAP))
             }
